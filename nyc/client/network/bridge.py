@@ -1,0 +1,35 @@
+"""One Linux bridge per VPC on this node.
+
+Bridge name is `br-<6char-node>-<6char-vpc>` so two nodes on the same host
+never collide.
+"""
+from nyc.client import privops
+
+
+def name_for(node_id: str, vpc_id: str) -> str:
+    # Linux IFNAMSIZ caps interface names at 15 chars. "br-XXXX-XXXX" = 12.
+    return f"br-{node_id[:4]}-{vpc_id[:4]}"
+
+
+def ensure(bridge: str, host_ip_cidr: str) -> None:
+    if not exists(bridge):
+        privops.run(["ip", "link", "add", bridge, "type", "bridge"])
+        privops.run(["ip", "addr", "add", host_ip_cidr, "dev", bridge])
+        privops.run(["ip", "link", "set", bridge, "up"])
+
+
+def delete(bridge: str) -> None:
+    if exists(bridge):
+        privops.run(["ip", "link", "del", bridge])
+
+
+def attach(bridge: str, host_veth: str) -> None:
+    privops.run(["ip", "link", "set", host_veth, "master", bridge])
+
+
+def exists(bridge: str) -> bool:
+    from nyc.client.privops_fake import STATE
+    if privops.backend() == "fake":
+        return bridge in STATE["bridges"] or bridge in STATE["links"]
+    out = privops.run(["ip", "-o", "link", "show", "type", "bridge"])
+    return any(bridge in line.split() for line in out.splitlines())
