@@ -61,6 +61,7 @@ python3 scripts/deploy.py up     cluster.toml          # provision + smoke
 python3 scripts/deploy.py down   cluster.toml [--purge] # teardown
 python3 scripts/deploy.py status cluster.toml          # health + node count
 python3 scripts/deploy.py ssh    cluster.toml <vm_id>  # ssh into a VM (see below)
+python3 scripts/deploy.py overlay-check cluster.toml <vpc_id>  # VXLAN/FDB/NAT audit
 ```
 
 - **`up`**: validate inventory (exactly one `bootstrap=true`; `vpc_cidr` must
@@ -128,3 +129,25 @@ ssh -J <ssh_user>@<node_domain> -i .nyc-deploy/id_ed25519 root@<vm_vpc_ip>
 hosting node from the API, then execs the above. (An earlier, more elaborate
 design — a dedicated restricted `nycjump` host user — was dropped in favour of
 this simpler reuse of the existing login.)
+
+## overlay-check
+
+`deploy.py overlay-check <cluster.toml> <vpc_id>` audits the VXLAN overlay for
+one VPC across the cluster — automating the kernel-state half of the manual
+diagnostic ladder. It reads `/nodes` + `/vms` from the bootstrap node, computes
+the expected per-node resource names, `vni`, and anycast MAC (the same
+deterministic functions as `nyc.client.network.overlay`, reimplemented in
+stdlib so `deploy.py` stays dependency-free), then ssh-runs a **read-only**
+probe on each node and prints a per-node table:
+
+- overlay dev `vx-<n4>-<v4>` present (only expected on nodes hosting a VM in the
+  VPC; a `vx-` with no VM is flagged STALE, not failed)
+- `vni`, VXLAN `local` = the node's underlay IP, bridge `master`
+- FDB head-end peers == exactly the other nodes' underlay IPs
+- bridge gateway IP + anycast MAC (MAC identical on every node ⇒ each is
+  validated against the same deterministic value)
+- `ip_forward=1` (NAT/internet egress)
+
+Exits non-zero if any node has a `[BAD]` row. It does **not** test the live
+datapath (cross-node UDP/4789 reachability and VM↔VM ping stay manual — see the
+overlay diagnostics in `nyc/nyc/client/network/spec.md` / the README).

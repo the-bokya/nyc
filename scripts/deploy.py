@@ -8,6 +8,7 @@ Uploads + runs the bash provision.sh / teardown.sh on each node over
   deploy.py down   cluster.toml [--purge] # teardown (reverse + idempotent)
   deploy.py status cluster.toml          # health + node count
   deploy.py ssh    cluster.toml <vm_id>  # ssh into a VM via the host jump server
+  deploy.py overlay-check cluster.toml <vpc_id>  # per-node VXLAN/FDB/NAT audit
 
 API calls (health, default VPC, smoke) run *on* a node via ssh -> localhost,
 so the control machine needs no private-network access. See REBUILD Part F.
@@ -15,6 +16,7 @@ so the control machine needs no private-network access. See REBUILD Part F.
 import argparse
 import base64
 import concurrent.futures
+import hashlib
 import ipaddress
 import json
 import shlex
@@ -26,6 +28,35 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SSH = ["ssh", "-A", "-o", "StrictHostKeyChecking=accept-new",
        "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
+LOOPBACK = (None, "", "127.0.0.1", "localhost")
+
+# Read-only per-node overlay probe (args: BR VX). Emits key=val lines.
+OVERLAY_PROBE = r'''
+BR="$1"; VX="$2"
+ex=no; ip link show "$VX" >/dev/null 2>&1 && ex=yes
+vni=$(ip -d link show "$VX" 2>/dev/null | grep -o 'vxlan id [0-9]*' | awk '{print $3}')
+local=$(ip -d link show "$VX" 2>/dev/null | grep -o 'local [0-9.]*' | awk '{print $2}')
+master=$(ip link show "$VX" 2>/dev/null | grep -o 'master [^ ]*' | awk '{print $2}')
+fdb=$(bridge fdb show dev "$VX" 2>/dev/null | awk '/00:00:00:00:00:00/{for(i=1;i<=NF;i++) if($i=="dst") print $(i+1)}' | sort -u | paste -sd, -)
+braddr=$(ip -o -4 addr show "$BR" 2>/dev/null | awk '{print $4}')
+brmac=$(cat /sys/class/net/"$BR"/address 2>/dev/null)
+ipfwd=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null)
+printf 'ex=%s\nvni=%s\nlocal=%s\nmaster=%s\nfdb=%s\nbraddr=%s\nbrmac=%s\nipfwd=%s\n' \
+  "$ex" "$vni" "$local" "$master" "$fdb" "$braddr" "$brmac" "$ipfwd"
+'''
+
+
+def vni_for(vpc_id: str) -> int:  # mirrors nyc.client.network.overlay.vni_for
+    return int.from_bytes(hashlib.sha256(vpc_id.encode()).digest()[:4], "big") % (2**24 - 1) + 1
+
+
+def anycast_mac(vpc_id: str) -> str:  # mirrors overlay.anycast_mac
+    b = hashlib.sha256(vpc_id.encode()).digest()
+    return "02:" + ":".join(f"{x:02x}" for x in b[:5])
+
+
+def overlay_names(node_id: str, vpc_id: str) -> tuple[str, str]:
+    return f"br-{node_id[:4]}-{vpc_id[:4]}", f"vx-{node_id[:4]}-{vpc_id[:4]}"
 
 
 def load(path: str) -> tuple[dict, list[dict]]:
@@ -202,6 +233,69 @@ def cmd_ssh(cluster: dict, nodes: list[dict], inventory: str, vm_id: str) -> int
     return subprocess.call(argv)
 
 
+def cmd_overlay_check(cluster: dict, nodes: list[dict], vpc_id: str) -> int:
+    boot = bootstrap_of(nodes)
+    registry = remote_curl(cluster, boot, "GET", "/nodes")
+    vms = remote_curl(cluster, boot, "GET", "/vms")
+    with_vm = {v["node_id"] for v in vms if v.get("vpc_id") == vpc_id}
+    hosts = [r["host"] for r in registry if r["host"] not in LOOPBACK]
+    vni, mac = vni_for(vpc_id), anycast_mac(vpc_id)
+    ok = True
+    for r in registry:
+        br, vx = overlay_names(r["node_id"], vpc_id)
+        peers = sorted(set(hosts) - {r["host"]})
+        ok = _audit_node(cluster, r, br, vx, vni, mac, peers, r["node_id"] in with_vm) and ok
+    print(f"\nvpc {vpc_id}: vni={vni} anycast_mac={mac} (peers expected per node = the other underlay IPs)")
+    print("OVERLAY OK" if ok else "OVERLAY ISSUES — investigate [BAD] rows (see the diagnostic ladder)")
+    return 0 if ok else 1
+
+
+def _audit_node(cluster: dict, reg: dict, br: str, vx: str, vni: int, mac: str,
+                peers: list[str], expect: bool) -> bool:
+    try:
+        d = _overlay_probe(cluster, reg, br, vx)
+    except Exception as exc:
+        print(f"\n=== {reg['host']} === \n  [ERR] probe failed: {exc}")
+        return False
+    return _render_overlay(reg, _eval_overlay(d, reg["host"], vni, mac, br, vx, peers, expect))
+
+
+def _overlay_probe(cluster: dict, reg: dict, br: str, vx: str) -> dict:
+    cmd = SSH + [ssh_target(cluster, reg), "bash", "-s", "--", br, vx]
+    out = subprocess.run(cmd, input=OVERLAY_PROBE, capture_output=True, text=True, timeout=30).stdout
+    return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+
+
+def _eval_overlay(d: dict, host: str, vni: int, mac: str, br: str, vx: str,
+                  peers: list[str], expect: bool) -> list[tuple]:
+    if not expect:
+        stale = d.get("ex") == "yes"
+        return [("overlay", not stale,
+                 f"STALE: {vx} present but no VM in VPC" if stale
+                 else "no VM in this VPC on node (overlay not expected)")]
+    have = sorted(filter(None, (d.get("fdb") or "").split(",")))
+    return [
+        ("overlay dev", d.get("ex") == "yes", vx if d.get("ex") == "yes" else f"{vx} MISSING"),
+        ("vni", d.get("vni") == str(vni), f"{d.get('vni')} (want {vni})"),
+        ("local ip", d.get("local") == host, f"{d.get('local')} (want {host})"),
+        ("bridge master", d.get("master") == br, f"{d.get('master')} (want {br})"),
+        ("fdb peers", have == peers, f"have {have} want {peers}"),
+        ("bridge mac", d.get("brmac") == mac, f"{d.get('brmac')} (want {mac})"),
+        ("bridge gw ip", bool(d.get("braddr")), d.get("braddr") or "MISSING"),
+        ("ip_forward", d.get("ipfwd") == "1", d.get("ipfwd") or "?"),
+    ]
+
+
+def _render_overlay(reg: dict, rows: list[tuple]) -> bool:
+    tgt = reg.get("domain") or reg.get("public_host") or reg["host"]
+    print(f"\n=== {tgt} ({reg['host']}) node={reg['node_id'][:8]} ===")
+    node_ok = True
+    for label, good, detail in rows:
+        print(f"  [{'OK ' if good else 'BAD'}] {label:<14} {detail}")
+        node_ok = node_ok and good
+    return node_ok
+
+
 def _delete_all_vms(cluster: dict, nodes: list[dict]) -> None:
     try:
         vms = remote_curl(cluster, bootstrap_of(nodes), "GET", "/vms")
@@ -225,9 +319,9 @@ def _parallel(fn, items: list) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="nyc bare-metal deploy")
-    ap.add_argument("action", choices=["up", "down", "status", "ssh"])
+    ap.add_argument("action", choices=["up", "down", "status", "ssh", "overlay-check"])
     ap.add_argument("inventory")
-    ap.add_argument("vm_id", nargs="?", help="ssh: id of the VM to connect to")
+    ap.add_argument("target", nargs="?", help="ssh: vm_id · overlay-check: vpc_id")
     ap.add_argument("--purge", action="store_true", help="down: also remove packages + checkout")
     a = ap.parse_args()
     cluster, nodes = load(a.inventory)
@@ -236,9 +330,13 @@ def main() -> int:
     if a.action == "down":
         return cmd_down(cluster, nodes, a.purge)
     if a.action == "ssh":
-        if not a.vm_id:
+        if not a.target:
             ap.error("ssh requires a vm_id")
-        return cmd_ssh(cluster, nodes, a.inventory, a.vm_id)
+        return cmd_ssh(cluster, nodes, a.inventory, a.target)
+    if a.action == "overlay-check":
+        if not a.target:
+            ap.error("overlay-check requires a vpc_id")
+        return cmd_overlay_check(cluster, nodes, a.target)
     return cmd_status(cluster, nodes)
 
 
