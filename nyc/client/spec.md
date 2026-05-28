@@ -7,8 +7,8 @@ above it.
 ## Modules
 
 ```
-env/       per-VM directory setup (rootfs symlink, kernel symlink, ssh key)
-vm/        firecracker process lifecycle + JSON config builder
+env/       per-VM directory setup (rootfs CoW copy, kernel symlink, ssh key)
+vm/        firecracker process lifecycle + JSON config builder + seed disk
 network/   netns, taps, bridges, VXLAN overlay, NAT, IP allocation
 volume/    data volume create/delete
 privops.py sudo shim + backend selector (exports PrivopsError)
@@ -34,9 +34,9 @@ the action functions, not the helpers.
   — `ip`, `bridge`, `iptables`, `sysctl`, `mount`, `umount`, `firecracker`,
   `kill`. The file-only ops in `_NO_SUDO` (`truncate`, `mkfs.ext4`, `cp`,
   `debugfs`) run **unprivileged**: they only touch files the user already owns
-  (the volume image, the per-VM rootfs copy, its authorized_keys), and sudo'ing
-  them would make those root-owned so a later teardown/`rm -rf` as the user
-  fails. The staging script writes a sudoers fragment scoped to the sudo'd set.
+  (the volume image, the per-VM rootfs copy, the cloud-init seed disk), and
+  sudo'ing them would make those root-owned so a later teardown/`rm -rf` as the
+  user fails. The staging script writes a sudoers fragment scoped to the sudo'd set.
   A missing iptables rule/chain (`-C`/`-nL`) exits non-zero, surfaced as
   `PrivopsError` — the client uses that for check-then-add idempotency.
 
@@ -48,7 +48,10 @@ The client code never branches on backend — only `privops.run()` does.
 full interface layout):
 
 ```
-env.setup(vm_dir, vm_id)        → writes rootfs symlink, kernel symlink, ssh key
+env.setup(vm_dir, vm_id)        → CoW copies rootfs (writable), symlinks kernel + ssh key
+vm.seed.create(paths, ...)      → writes seed.ext4 (cidata): meta-data + cloud-config
+                                   cloud-config carries ssh key + /home mount for data vol
+volume.attach(vm_dir, path)     → symlinks data.ext4 into the VM dir (if data volume)
 network.bridge.ensure(br, gateway_cidr, mac=anycast_mac(vpc))  → anycast gateway
 network.vxlan.ensure + set_fdb  → per-VPC tunnel to peers (skipped single-host)
 network.nat.ensure(cidr)        → ip_forward + masquerade for internet egress
@@ -56,6 +59,7 @@ network.namespace.create(ns)
 veth pair → place ns side → attach host side to bridge → up
 network.ns_bridge.create(ns) + tap.create(ns, tap0) joined in nbr0
 vm.config.build(vm_dir, cfg)    → firecracker JSON config on disk (incl. dns)
+                                   drives: rootfs (rw) [+ data (rw)] + seed (ro)
 vm.create.run(vm_dir, cfg)      → spawns `firecracker --api-sock ... --config ...`
 vm.boot.run(vm_dir, cfg)        → issues InstanceStart over the API socket
 ```

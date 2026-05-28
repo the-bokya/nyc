@@ -5,7 +5,7 @@ Two create paths:
   - `POST /vms/spawn` — turnkey: no vpc_id/node_id. Lands in the default VPC on
     a randomly chosen node (proxied there, pinned via the `X-Nyc-Pin` header so
     the chosen node doesn't re-roll), auto-creates a per-VM data volume, and
-    bakes the caller's ssh key into that VM's own rootfs copy.
+    injects the caller's ssh key + /home mount via a cloud-init seed disk.
 """
 import os
 import random
@@ -125,7 +125,7 @@ def _spec(row: dict, cidr: str, vol_path: Path | None, client: Client,
     paths = resolve()
     node_id = row["node_id"]
     return vm_up.VmSpec(
-        vm_id=row["id"], node_id=node_id, vpc_id=row["vpc_id"],
+        vm_id=row["id"], vm_name=row["name"], node_id=node_id, vpc_id=row["vpc_id"],
         ip=row["ip"], cidr=cidr, data_volume_path=vol_path,
         assets={"rootfs": paths.rootfs, "kernel": paths.kernel, "ssh_key": paths.ssh_key},
         vms_dir=paths.vms_dir, firecracker_bin=paths.firecracker_bin,

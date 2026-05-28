@@ -15,13 +15,14 @@ from nyc.client.env import setup as env_setup
 from nyc.client.network import bridge, namespace, nat, ns_bridge, tap, veth, vxlan
 from nyc.client.network.allocate import gateway_cidr
 from nyc.client.network.overlay import anycast_mac, vni_for
-from nyc.client.vm import boot, config, create, inject_key
+from nyc.client.vm import boot, config, create, seed
 from nyc.client.volume import attach
 
 
 @dataclass(frozen=True)
 class VmSpec:
     vm_id: str
+    vm_name: str
     node_id: str
     vpc_id: str
     ip: str
@@ -30,22 +31,18 @@ class VmSpec:
     assets: dict
     vms_dir: Path
     firecracker_bin: Path
-    # Cross-node overlay inputs, resolved from the dadar registry by the caller
-    # (keeps this client layer dadar-free). Loopback/empty ⇒ single-host: no overlay.
     node_host: str = "127.0.0.1"
     peer_hosts: list = field(default_factory=list)
     dns: str = "1.1.1.1"
-    # When set, give this VM its own rootfs copy with this pubkey baked in.
     ssh_pubkey: str | None = None
     vcpu_count: int = 1
     mem_mib: int = 512
 
 
 def run(spec: VmSpec) -> Path:
-    paths = env_setup.run(spec.vms_dir, spec.vm_id, spec.assets,
-                          copy_rootfs=spec.ssh_pubkey is not None)
-    if spec.ssh_pubkey is not None:
-        inject_key.run(paths.rootfs, spec.ssh_pubkey)
+    paths = env_setup.run(spec.vms_dir, spec.vm_id, spec.assets)
+    seed.create(paths, spec.vm_id, spec.vm_name, spec.ssh_pubkey,
+                has_data_volume=spec.data_volume_path is not None)
     if spec.data_volume_path is not None:
         attach.run(paths.root, spec.data_volume_path)
     _network(spec)
@@ -66,7 +63,6 @@ def _network(spec: VmSpec) -> None:
 
 
 def _overlay(spec: VmSpec, br: str) -> None:
-    # Single host (loopback) or no peers yet ⇒ nothing to tunnel.
     if not spec.peer_hosts or spec.node_host in (None, "127.0.0.1", "localhost"):
         return
     name = vxlan.name_for(spec.node_id, spec.vpc_id)

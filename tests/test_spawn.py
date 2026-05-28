@@ -1,4 +1,4 @@
-"""POST /vms/spawn — turnkey VM: default VPC, auto volume, per-VM key inject.
+"""POST /vms/spawn — turnkey VM: default VPC, auto volume, seed disk.
 
 Single-node fixture, so the random node pick always resolves to this node and
 the spawn runs locally (the cross-node pin/forward path is covered in e2e).
@@ -48,11 +48,25 @@ def test_spawn_honours_overrides(http):
     assert got["vcpu_count"] == 4 and got["mem_mib"] == 2048
 
 
-def test_spawn_copies_rootfs_and_injects_key(http):
+def test_spawn_creates_writable_rootfs_copy(http):
     vm = _spawn(http)
     suffix = f"{vm['id']}/rootfs.ext4"
     assert any(dest.endswith(suffix) for _, dest in STATE["copies"])
+
+
+def test_spawn_creates_seed_disk(http):
+    vm = _spawn(http)
+    suffix = f"{vm['id']}/seed.ext4"
+    # mkfs.ext4 records the seed path in files; debugfs write records the argv
+    assert any(k.endswith(suffix) for k in STATE["files"])
     assert any(argv[-1].endswith(suffix) for argv in STATE["debugfs"])
+
+
+def test_explicit_create_also_copies_rootfs_and_creates_seed(http):
+    vpc = http.post("/vpcs", json={"name": "net", "cidr": "10.5.0.0/24"}).json()
+    vm = http.post("/vms", json={"name": "plain", "vpc_id": vpc["id"]}).json()
+    assert any(dest.endswith(f"{vm['id']}/rootfs.ext4") for _, dest in STATE["copies"])
+    assert any(argv[-1].endswith(f"{vm['id']}/seed.ext4") for argv in STATE["debugfs"])
 
 
 def test_spawn_reuses_one_default_vpc(http):
@@ -63,17 +77,7 @@ def test_spawn_reuses_one_default_vpc(http):
     assert len(http.get("/vpcs").json()) == 1
 
 
-def test_explicit_create_still_symlinks_rootfs(http):
-    vpc = http.post("/vpcs", json={"name": "net", "cidr": "10.5.0.0/24"}).json()
-    http.post("/vms", json={"name": "plain", "vpc_id": vpc["id"]})
-    # No per-VM rootfs copy and no debugfs edit on the explicit path.
-    assert STATE["copies"] == [] and STATE["debugfs"] == []
-
-
 def test_local_only_header_filters_to_owner(http, node):
-    # X-Nyc-Local makes /vms report only the receiving node's own VMs (with a
-    # locally-observed live_status) and skip the cross-node merge. Here the
-    # single node owns everything, so it returns the VM as running.
     vm = _spawn(http)
     local = http.get("/vms", headers={"X-Nyc-Local": "1"}).json()
     assert all(v["node_id"] == node["node_id"] for v in local)

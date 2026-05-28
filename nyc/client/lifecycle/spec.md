@@ -15,19 +15,29 @@ primitives.
 
 ## `VmSpec` (input to `vm_up`)
 
-Frozen dataclass: `vm_id`, `node_id`, `vpc_id`, `ip`, `cidr`,
+Frozen dataclass: `vm_id`, `vm_name`, `node_id`, `vpc_id`, `ip`, `cidr`,
 `data_volume_path: Path | None`, `assets: dict`, `vms_dir: Path`,
-`firecracker_bin: Path`. The caller (router) resolves the IP via
-`network.allocate.pick_ip` and the volume path before constructing this.
+`firecracker_bin: Path`, `ssh_pubkey: str | None`. The caller (router) resolves
+the IP via `network.allocate.pick_ip` and the volume path before constructing
+this.
 
 ## Bring-up order (`vm_up`)
 
-1. `env.setup` — make the VM dir and symlink rootfs/kernel/ssh-key.
-2. If `data_volume_path`: `volume.attach` it as `data.ext4`.
-3. `_network`: ensure the VPC bridge (with gateway IP) → create netns →
+1. `env.setup` — CoW-copy rootfs (writable per-VM), symlink kernel + ssh key.
+2. `vm.seed.create` — write a 1 MiB cloud-init NoCloud seed disk (`seed.ext4`,
+   label `cidata`). Contains `meta-data` (instance-id + hostname) and
+   `user-data` (cloud-config: SSH authorized key if provided; `/dev/vdb →
+   /home` mount if a data volume is attached).
+3. If `data_volume_path`: `volume.attach` it as `data.ext4`.
+4. `_network`: ensure the VPC bridge (with gateway IP) → create netns →
    veth pair (host side joins the VPC bridge) → in-netns `nbr0` + `tap0`.
-4. `_spawn`: build `VmConfig` → `config.build` → `vm.create` (inside the
+5. `_spawn`: build `VmConfig` → `config.build` → `vm.create` (inside the
    netns) → `vm.boot`.
+
+Drive order in the Firecracker config determines `/dev/vd*` names in the guest:
+- `vda` rootfs — writable, `is_root_device=true`
+- `vdb` data   — present only when `data_volume_path` is set; cloud-init mounts at `/home`
+- `vdb`/`vdc` seed — always present; read-only cidata disk consumed by cloud-init
 
 The guest MAC is derived deterministically from `vm_id` (`_mac`), and the
 netns/veth names from `vm_id[:8]` (`_ns_name`, `_veth_names`) — so the same VM
