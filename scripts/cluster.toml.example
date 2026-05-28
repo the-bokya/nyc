@@ -1,5 +1,5 @@
 # nyc bare-metal inventory. Copy to cluster.toml and fill in.
-# Used by scripts/preflight.py (and, later, scripts/deploy.py).
+# Used by scripts/preflight.py and scripts/deploy.py.
 
 [cluster]
 ssh_user   = "ubuntu"                                # passwordless-sudo login user
@@ -8,6 +8,7 @@ repo_url   = "git@github.com:the-bokya/equator.git"  # cloned recursively via fo
 remote_dir = "~/equator"                             # checkout location on each node
 vpc_cidr   = "172.16.0.0/16"                          # default VPC; MUST NOT overlap the underlay
 dns        = "1.1.1.1"                                # resolver baked into guest VMs
+vm_ttl_minutes = 0                                    # auto-delete VMs N minutes after creation (0 = never)
 http_port  = 8000
 rqlite_http_port = 4001
 rqlite_raft_port = 4002

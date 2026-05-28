@@ -49,3 +49,13 @@ mem_mib=512}` — deliberately **no `vpc_id`, no `node_id`**.
 
 `DELETE /vms/{id}` currently removes the VM only — it does **not** cascade to
 the auto-created volume. (Open question for the lifecycle work: should it?)
+
+## Lifecycle: `POST /vms/{id}/{stop,start,reboot}`
+
+Each is proxied to the owning node (same owner lookup as `DELETE`/`GET`) and
+flips the `vms.status` column. **stop** → `stopped` (kills firecracker, keeps
+netns/veth/tap/bridge/volume/dir for a cheap restart). **start** → `running`
+(respawns firecracker from the on-disk `config.json`). **reboot** = stop+start.
+The router resolves `ns`/`firecracker_bin` and calls the pure
+`lifecycle.vm_stop`/`vm_start` composers (see `client/lifecycle/spec.md`). A
+`stopped` VM keeps its dir, so the reconciler does not treat it as an orphan.

@@ -8,7 +8,8 @@ the diff each interval and brings reality to match.
 
 | File | Role |
 |---|---|
-| `pass_once.py`   | `run(client, node_id) → {vms, volumes, overlay}` — one shot, returns a report. |
+| `pass_once.py`   | `run(client, node_id) → {ttl, vms, volumes, overlay}` — one shot, returns a report. |
+| `ttl_pass.py`    | Delete local VMs older than `NYC_VM_TTL_MINUTES` (0/unset = off). |
 | `vms_pass.py`    | Reconcile `vms` table against `<vms_dir>/*` |
 | `volumes_pass.py`| Reconcile `volumes` table against `<volumes_dir>/*.ext4` |
 | `overlay_pass.py`| Re-sync each local VPC's VXLAN head-end FDB to the current peer set. |
@@ -27,6 +28,17 @@ For each resource type:
 
 `POST /reconcile` runs `pass_once.run` synchronously and returns the report.
 That's how tests assert reconciliation actually did something.
+
+## TTL pass
+
+`ttl_pass` runs **first** in each pass. Optional auto-expiry: when
+`NYC_VM_TTL_MINUTES > 0` (deploy bakes it into the node's systemd unit from
+`cluster.toml`'s `vm_ttl_minutes`), it deletes this node's VMs whose
+`created_at` is older than the TTL — `vm_down` + drop the row, the same teardown
+`DELETE /vms` uses (the auto data volume is not cascaded). At 0/unset it returns
+`{"reaped": []}` immediately, so staging and TTL-less clusters are unaffected.
+Running before the vms pass means a reaped VM's dir is already gone and is not
+re-seen as an orphan.
 
 ## Overlay pass
 

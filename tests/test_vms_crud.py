@@ -71,3 +71,25 @@ def test_delete_cleans_netns(http, vpc):
     assert ns in STATE["netns"]
     http.delete(f"/vms/{vm['id']}")
     assert ns not in STATE["netns"]
+
+
+def test_stop_then_start(http, vpc):
+    from nyc.client.privops_fake import STATE
+    vm = http.post("/vms", json={"name": "s", "vpc_id": vpc["id"]}).json()
+    ns = f"vm-{vm['id'][:8]}"
+    assert http.post(f"/vms/{vm['id']}/stop").json()["status"] == "stopped"
+    # stop preserves the netns (cheap respawn on start)
+    assert ns in STATE["netns"]
+    assert http.get(f"/vms/{vm['id']}").json()["live_status"] == "stopped"
+    assert http.post(f"/vms/{vm['id']}/start").json()["status"] == "running"
+    assert http.get(f"/vms/{vm['id']}").json()["live_status"] == "running"
+
+
+def test_reboot(http, vpc):
+    vm = http.post("/vms", json={"name": "rb", "vpc_id": vpc["id"]}).json()
+    assert http.post(f"/vms/{vm['id']}/reboot").json()["status"] == "running"
+    assert http.get(f"/vms/{vm['id']}").json()["live_status"] == "running"
+
+
+def test_lifecycle_unknown_vm_404(http):
+    assert http.post("/vms/nope/stop").status_code == 404

@@ -288,6 +288,7 @@ repo_url   = "git@github.com:the-bokya/equator.git"
 remote_dir = "~/equator"
 vpc_cidr   = "172.16.0.0/16"                          # default VPC; must not overlap underlay
 dns        = "1.1.1.1"
+vm_ttl_minutes = 0                                    # auto-delete VMs N min after creation (0 = off)
 http_port  = 8000
 rqlite_http_port = 4001
 rqlite_raft_port = 4002
@@ -385,7 +386,18 @@ from the hosting node. Resolve the host from the DB
 ssh -J <ssh_user>@<node_domain> -i <shared_vm_key> root@<vm_vpc_ip>
 ```
 No blocker. The shared VM private key is generated on the control machine and
-distributed to nodes' `assets/`; `spawn_vm` keys are layered per VM.
+distributed to nodes' `assets/`; `spawn_vm` keys are layered per VM. No special
+host account: the jump reuses the cluster `ssh_user` (operators already have
+node login). `deploy.py ssh <cluster.toml> <vm_id>` automates this — it reads
+the VM IP + hosting node from the API and execs the `ssh -J` above. (A dedicated
+restricted `nycjump` user was considered and rejected as over-elaborate.)
+
+### VM TTL (auto-delete) — optional
+`cluster.toml` `vm_ttl_minutes` (0/omitted = off) → `deploy.py` → baked into the
+`nyc-node.service` unit as `Environment=NYC_VM_TTL_MINUTES=<n>`. `reconciler/
+ttl_pass.py` (runs first each pass) deletes this node's VMs whose `created_at`
+is older than the TTL (same path as `DELETE /vms`; auto data volume not
+cascaded). No-op at 0, so single-host stage stays green.
 
 ### Parameterize the e2e test for remote nodes
 `tests/test_stage_e2e.py`: accept explicit base URLs via env
@@ -411,8 +423,8 @@ on the bootstrap node).
 2. Part B proxy + `privops_fake` handlers → fake suite green.
 3. Part C overlay + NAT + DNS → stage 3 (fake) green + new unit tests.
 4. **[DONE] Part D spawn_vm + per-VM key** → unit + e2e tests, stage 1 (fake) green.
-5. Part E lifecycle endpoints + tests.
-6. Part F `deploy.py`/`provision.sh`/`teardown.sh` + e2e parameterization +
-   `scripts/spec.md`.
+5. **[DONE] Part E lifecycle endpoints + tests.**
+6. **[DONE] Part F `deploy.py`/`provision.sh`/`teardown.sh` + e2e
+   parameterization + `scripts/spec.md`.**
 7. Update all touched `spec.md`/README → push nyc → bump+push equator submodule
    pointers. **Then** `deploy up` can pull the new code.

@@ -12,6 +12,8 @@ primitives.
 |---|---|---|
 | `vm_up.py` | `run(spec: VmSpec) -> Path` | Build a VM end to end; returns its dir. |
 | `vm_down.py` | `run(vms_dir, vm_id)` | Tear a VM down completely. |
+| `vm_stop.py` | `run(vms_dir, vm_id)` | Kill firecracker only; keep all else on disk. |
+| `vm_start.py` | `run(vms_dir, vm_id, ns, firecracker_bin)` | Respawn firecracker from the on-disk `config.json`. |
 
 ## `VmSpec` (input to `vm_up`)
 
@@ -54,3 +56,14 @@ veth, `nbr0`, `tap0`), then the host-side veth. Each network step is wrapped in
 `_safe` so a missing resource (already-gone VM, partial earlier failure) never
 blocks the rest of the teardown — important because the reconciler calls this
 to clean up orphans.
+
+## Stop / start / reboot (`vm_stop`, `vm_start`)
+
+**stop** keeps everything except the firecracker process (netns, tap, veth,
+bridge, volume, IP, the `config.json`, and the DB row are all preserved), so
+**start** is a cheap respawn — `vm.create` (inside the still-existing netns)
+then `vm.boot`, reading the on-disk config. No `VmSpec`, no network re-wiring.
+The router resolves `ns = vm-<vm_id[:8]>` and `firecracker_bin` (from
+`config.resolve`) and passes them in, keeping the client layer pure. **reboot**
+is just stop+start. A `stopped` VM keeps its dir, so the reconciler (which only
+reaps dirs with no DB row) leaves it alone — it is not an orphan.

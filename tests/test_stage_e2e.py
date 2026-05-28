@@ -1,10 +1,13 @@
-"""End-to-end against a live N-node staging cluster.
+"""End-to-end against a live N-node cluster.
 
-Pre-requirements (set by `scripts/stage.sh`):
-  NYC_STAGE_BASE_PORT - port of node 1 (subsequent nodes increment by 1)
-  NYC_STAGE_NODES     - cluster size N
+Two ways to point this at a cluster:
+  NYC_E2E_URLS        - comma-separated base URLs, node 1 first
+                        (e.g. "http://10.0.0.11:8000,http://10.0.0.12:8000").
+                        Used by `deploy up` against real bare-metal nodes.
+  NYC_STAGE_BASE_PORT - port of node 1 on localhost (subsequent nodes +1),
+  NYC_STAGE_NODES     - cluster size N. Set by `scripts/stage.sh`.
 
-Skipped if the env vars are unset (e.g. unit test runs).
+`NYC_E2E_URLS` wins when both are set. Skipped if neither is set (unit runs).
 """
 import os
 import re
@@ -14,10 +17,11 @@ import time
 import httpx
 import pytest
 
+URLS = [u.strip().rstrip("/") for u in os.environ.get("NYC_E2E_URLS", "").split(",") if u.strip()]
 BASE = int(os.environ.get("NYC_STAGE_BASE_PORT", "0"))
-N = int(os.environ.get("NYC_STAGE_NODES", "0"))
+N = len(URLS) or int(os.environ.get("NYC_STAGE_NODES", "0"))
 
-pytestmark = pytest.mark.skipif(BASE == 0, reason="staging env vars not set")
+pytestmark = pytest.mark.skipif(not URLS and BASE == 0, reason="staging env vars not set")
 
 
 def _list_links() -> list[str]:
@@ -46,6 +50,8 @@ def _purge_stale_kernel_state():
 
 
 def url(node_i: int, path: str) -> str:
+    if URLS:
+        return f"{URLS[node_i - 1]}{path}"
     return f"http://127.0.0.1:{BASE + node_i - 1}{path}"
 
 

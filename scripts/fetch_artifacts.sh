@@ -28,7 +28,9 @@ if [[ ! -f "$KEY" ]]; then
     ssh-keygen -t ed25519 -N "" -f "$KEY" -q
 fi
 
-# DNS and SSH keys are delivered per-VM via cloud-init seed disk; no rootfs patching needed.
+# Per-VM DNS/SSH/fstab are injected offline via debugfs at boot (nyc.client.vm.inject).
+# The shared key + resolv.conf are baked into this base rootfs by scripts/provision.sh
+# (so plain `POST /vms` instances are reachable for the ssh-jump deliverable).
 
 echo "assets ready in assets/"
 ls -lh "$KERNEL" "$ROOTFS" "$KEY" "$KEY.pub"

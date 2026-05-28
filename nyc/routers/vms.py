@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
 from nyc import peers
-from nyc.client.lifecycle import vm_down, vm_up
+from nyc.client.lifecycle import vm_down, vm_start, vm_stop, vm_up
 from nyc.client.network.allocate import pick_ip
 from nyc.client.vm import status as vm_status
 from nyc.client.env.paths import for_vm
@@ -101,6 +101,57 @@ def delete_vm(vm_id: str, client: Client = Depends(get_client),
         forward(client, owner, "DELETE", f"/vms/{vm_id}")
         return
     _delete_local(vm_id, client)
+
+
+@router.post("/{vm_id}/stop")
+def stop_vm(vm_id: str, client: Client = Depends(get_client),
+            node_id: str = Depends(get_node_id)) -> dict:
+    owner = _owner_or_404(vm_id, client)
+    if owner != node_id:
+        return forward(client, owner, "POST", f"/vms/{vm_id}/stop")
+    return _stop_local(vm_id, client)
+
+
+@router.post("/{vm_id}/start")
+def start_vm(vm_id: str, client: Client = Depends(get_client),
+             node_id: str = Depends(get_node_id)) -> dict:
+    owner = _owner_or_404(vm_id, client)
+    if owner != node_id:
+        return forward(client, owner, "POST", f"/vms/{vm_id}/start")
+    return _start_local(vm_id, client)
+
+
+@router.post("/{vm_id}/reboot")
+def reboot_vm(vm_id: str, client: Client = Depends(get_client),
+              node_id: str = Depends(get_node_id)) -> dict:
+    owner = _owner_or_404(vm_id, client)
+    if owner != node_id:
+        return forward(client, owner, "POST", f"/vms/{vm_id}/reboot")
+    _stop_local(vm_id, client)
+    return _start_local(vm_id, client)
+
+
+def _stop_local(vm_id: str, client: Client) -> dict:
+    vm_stop.run(resolve().vms_dir, vm_id)
+    return _set_status(vm_id, "stopped", client)
+
+
+def _start_local(vm_id: str, client: Client) -> dict:
+    paths = resolve()
+    vm_start.run(paths.vms_dir, vm_id, f"vm-{vm_id[:8]}", paths.firecracker_bin)
+    return _set_status(vm_id, "running", client)
+
+
+def _set_status(vm_id: str, status: str, client: Client) -> dict:
+    Vms(client).docs.update(where={"id": vm_id}, set={"status": status})
+    return Vms(client).docs.get(where={"id": vm_id}).__dict__
+
+
+def _owner_or_404(vm_id: str, client: Client) -> str:
+    row = Vms(client).docs.get(where={"id": vm_id})
+    if row is None:
+        raise HTTPException(404, "vm not found")
+    return row.__dict__["node_id"]
 
 
 def _create_local(body: VmIn, node_id: str, client: Client) -> dict:
