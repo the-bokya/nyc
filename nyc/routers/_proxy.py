@@ -13,9 +13,10 @@ from dadar.tables import Nodes
 from fastapi import HTTPException
 
 
-def forward(client: Client, node_id: str, method: str, path: str, json: Any = None) -> dict:
+def forward(client: Client, node_id: str, method: str, path: str,
+            json: Any = None, headers: dict | None = None) -> dict:
     base = _base_url(client, node_id)
-    resp = httpx.request(method, f"{base}{path}", json=json, timeout=30.0)
+    resp = httpx.request(method, f"{base}{path}", json=json, headers=headers, timeout=30.0)
     if resp.status_code >= 400:
         raise HTTPException(resp.status_code, resp.text)
     return resp.json() if resp.content else {}

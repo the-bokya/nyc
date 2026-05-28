@@ -30,8 +30,14 @@ def attach(bridge: str, host_veth: str) -> None:
 
 
 def exists(bridge: str) -> bool:
-    from nyc.client.privops_fake import STATE
     if privops.backend() == "fake":
+        from nyc.client.privops_fake import STATE
         return bridge in STATE["bridges"] or bridge in STATE["links"]
-    out = privops.run(["ip", "-o", "link", "show", "type", "bridge"])
-    return any(bridge in line.split() for line in out.splitlines())
+    # Probe the specific device — parsing `ip -o link show` is fragile: the name
+    # column carries a trailing ":" (and "@ifN" for some kinds), so substring
+    # matching silently fails and ensure() would re-create an existing bridge.
+    try:
+        privops.run(["ip", "link", "show", bridge])
+        return True
+    except privops.PrivopsError:
+        return False

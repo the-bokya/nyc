@@ -10,6 +10,7 @@ and its config.
 | File | Public fn | Does |
 |---|---|---|
 | `config.py` | `build(paths, cfg)` | Write firecracker JSON to `paths.config`. Returns the path. |
+| `inject_key.py` | `run(rootfs, pubkey)` | Bake `pubkey` into the rootfs's `/root/.ssh/authorized_keys` offline via `debugfs` (one batched `privops` call). Requires a per-VM rootfs copy (`env.setup(copy_rootfs=True)`). Replaces authorized_keys — the VM accepts only this key. |
 | `create.py` | `run(paths, vm_id, ns, firecracker_bin)` | Spawn firecracker inside netns `ns`; write pid. Returns pid. |
 | `boot.py` | `run(paths)` | Stable "boot" verb. With `--config-file`, real firecracker auto-starts, so this is a no-op on `real` and a state flip on `fake`. |
 | `status.py` | `run(paths)` | `"running"` \| `"stopped"`. |

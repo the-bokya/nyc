@@ -41,6 +41,8 @@ def reset_state() -> None:
         "fc_socks":  {},          # api_sock_path -> {"vm_dir": str, "running": bool}
         "sysctl":    {},          # key -> value
         "fdb":       {},          # dev -> {(mac, dst)}
+        "copies":    [],          # [(source, dest)] from `cp` (per-VM rootfs clone)
+        "debugfs":   [],          # [argv] from `debugfs` (offline rootfs edits)
         "iptables":  {t: {"chains": set(c), "builtin": set(c), "rules": {}}
                       for t, c in _IPT_BUILTIN.items()},
     })
@@ -201,6 +203,18 @@ def _kill(argv, _input):
     return ""
 
 
+def _cp(argv, _input):
+    # ["cp", "--reflink=auto", source, dest] — record the per-VM rootfs clone.
+    STATE["copies"].append((argv[-2], argv[-1]))
+    return ""
+
+
+def _debugfs(argv, _input):
+    # ["debugfs", "-w", "-f", cmdfile, rootfs] — record the offline rootfs edit.
+    STATE["debugfs"].append(list(argv))
+    return ""
+
+
 def _sysctl(argv, _input):
     # ["sysctl", "-w", "key=value"]
     if "-w" in argv:
@@ -310,4 +324,6 @@ _HANDLERS = {
     "sysctl":      _sysctl,
     "bridge":      _bridge,
     "iptables":    _iptables,
+    "cp":          _cp,
+    "debugfs":     _debugfs,
 }

@@ -20,6 +20,11 @@ Schema choices:
   the router layer (`ipaddress.ip_network(strict=True)`), not by SQL.
 - `vms.status` and `volumes.status` are TEXT, not CHECK-constrained. Migration
   cost outweighs the value — the router layer enforces the enum.
+- `vms.vcpu_count` / `vms.mem_mib` carry the VM's machine shape (defaults 1 /
+  512). Persisted so a stop→start can rebuild the same firecracker config.
+- The `default` VPC (a /16, see `nyc.defaults`) is the network `POST /vms/spawn`
+  uses. It is an ordinary row enforced unique by `vpcs.name`; get-or-create is
+  race-safe (a losing concurrent insert just re-reads the winner).
 - No foreign keys at the SQL level. rqlite supports them but cross-table
   referential integrity isn't worth the deletion-order pain. The routers
   enforce it (`DELETE /vpcs/{id}` rejects when any VM still references it).

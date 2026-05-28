@@ -187,44 +187,65 @@ Update `nyc/client/network/spec.md` and `client/spec.md` for the new topology.
 
 Convenience API: auto data-volume + per-VM key, default VPC, random placement.
 
-### `POST /vms/spawn`
+### `POST /vms/spawn`  *(as built)*
 Body: `{vm_name: str, ssh_key: str, size_mb?: int=1024, vcpu_count?: int=1, mem_mib?: int=512}`.
-**No `vpc_id`, no `node_id` in the body.** Internal query param `pin` (not
-public) carries the chosen node across the one proxy hop.
+**No `vpc_id`, no `node_id` in the body.** The chosen node crosses the one
+proxy hop in the **`X-Nyc-Pin` header** (a header, not a query/body field — so
+it never shows up as API surface). `forward()` gained a `headers=` arg.
 
 Handler (`routers/vms.py`):
-1. If `pin` is None: pick `target = random.choice(Nodes.get_all()).node_id`.
-   If `target != self`: `forward(... "POST", f"/vms/spawn?pin={target}", json=body)`; return.
-2. (We are the target, or `pin==self`.) Resolve default VPC:
-   `vpc = Vpcs.get(where={"name": "default"})` → 400 if missing.
-3. Create a DB-tracked volume locally (reuse volume create logic): insert
-   `volumes` row, `volume.create.run(path, size_mb)`.
+1. `target = pin or _random_node(client)` (`pin` = the `X-Nyc-Pin` header).
+   If `target != self`: `forward(... "POST", "/vms/spawn", json=body,
+   headers={"X-Nyc-Pin": target})`; return.
+2. (We are the target.) `vpc = ensure_default_vpc(client)` — get-or-create the
+   `default` /16 (`nyc/defaults.py`), race-safe via the `vpcs.name` UNIQUE
+   constraint. (No 400: spawn is self-sufficient; deploy also pre-creates it.)
+3. `_auto_volume(...)`: `volume.create.run(path, size_mb)` + insert a
+   `volumes` row named `<vm_name>-data`, on this node.
 4. Allocate IP from the VPC, insert `vms` row (status pending,
-   `data_volume_id` = the new volume, `ssh_pubkey_path` = the injected key file).
-5. `vm_up.run(spec)` with `ssh_pubkey=body.ssh_key`, `vcpu_count`, `mem_mib`.
+   `data_volume_id` = the new volume, `ssh_pubkey_path` = None, `vcpu_count`,
+   `mem_mib`).
+5. `_bring_up(row, ..., ssh_pubkey=body.ssh_key)` → `vm_up.run(spec)`.
 6. status → running; return the row.
 
-`random` import + `Query` param are the only router additions. The plain
-`POST /vms` keeps explicit `node_id`/`vpc_id` for targeted placement.
+Router additions: `import random`, `Header`, `Nodes`, `ensure_default_vpc`,
+`vol_create`. The plain `POST /vms` keeps explicit `node_id`/`vpc_id`.
 
-### Per-VM key injection (rootfs copy + debugfs)
+`DELETE /vms/{id}` is unchanged — it does **not** cascade to the auto volume
+(open question, deferred to the lifecycle work).
+
+### Per-VM key injection (rootfs copy + debugfs)  *(as built)*
 - `VmSpec` gains `ssh_pubkey: str | None`, `vcpu_count`, `mem_mib`.
-- `client/env/setup.py`: if `ssh_pubkey` given → `cp --reflink=auto <shared
-  rootfs> <vm_dir>/rootfs.ext4` (a real per-VM file, not a symlink) then
-  `inject_key.run(vm_dir/rootfs.ext4, ssh_pubkey)`; else current symlink path.
-  Split into helpers to stay ≤12 lines.
-- `client/vm/inject_key.py` (new): `run(rootfs_path, pubkey_str)` — real mode
-  runs the `debugfs -w` dance factored out of `scripts/inject_ssh_key.sh`
-  (write authorized_keys, set modes/uid/gid, PermitRootLogin). Fake mode: no-op.
-  Does NOT need sudo (just file write perms) — runs `debugfs` directly, not via
-  privops. Guard on `privops.backend()=="real"`.
+- `client/env/setup.py` `run(..., copy_rootfs=False)`: when True, the rootfs is
+  a per-VM **copy** (`privops.run(["cp","--reflink=auto",src,dst])`) instead of
+  a symlink; kernel + ssh key still symlinked. `vm_up.run` sets
+  `copy_rootfs=spec.ssh_pubkey is not None` and then calls `inject_key`.
+- `client/vm/inject_key.py` (new): `run(rootfs, pubkey)` writes a temp
+  authorized_keys + a `debugfs` command file, then one
+  `privops.run(["debugfs","-w","-f",cmds,rootfs])`. Routed through privops so
+  `fake` records it (handlers `_cp`/`_debugfs` append to
+  `STATE["copies"]`/`STATE["debugfs"]`) and `real` runs it. **Replaces**
+  authorized_keys (the VM accepts only this key). PermitRootLogin is already set
+  in the shared image by deploy-time `inject_ssh_key.sh`, so the copy inherits
+  it — not re-done here. Validated: `debugfs -f` batch exits 0 even when
+  `mkdir /root/.ssh` errors (dir already exists), key lands mode 0600 uid/gid 0.
 - Firecracker drive for the copied rootfs stays `is_read_only: true` (injection
   happens on the host file before boot).
 - Trade-off (documented): spawned VMs do not share the rootfs (full copy,
   ~300 MB unless the FS supports reflink). Future: overlayfs / MMDS+agent.
 
 ### Config plumbing
-`VmConfig` gains `vcpu_count`, `mem_mib`, `dns`; `vm_up._spawn` passes them.
+`vms` table gains `vcpu_count`/`mem_mib` (persisted so stop→start rebuilds the
+same config). `VmConfig` already had `vcpu_count`/`mem_mib`/`dns`; `vm_up._spawn`
+now passes `spec.vcpu_count`/`spec.mem_mib` through.
+
+### stage.sh hardening (found during Part D verify)
+The teardown trap killed only the `setsid` wrapper pid, not the detached
+`uv → python → rqlited` tree, so nodes leaked and squatted their ports; the next
+run then probed a stale zombie and DB writes hung. Fixed: cleanup now `pkill`s
+the node cmdlines (reaping the defunct rqlited too), a startup **port preflight**
+fails fast if a port is already held, and cleanup preserves the real exit code
+(a passing fake run now exits 0, not the old misleading 1).
 
 ---
 
@@ -389,7 +410,7 @@ on the bootstrap node).
 1. **[DONE] Part A (dadar)** → review + push dadar.
 2. Part B proxy + `privops_fake` handlers → fake suite green.
 3. Part C overlay + NAT + DNS → stage 3 (fake) green + new unit tests.
-4. Part D spawn_vm + per-VM key.
+4. **[DONE] Part D spawn_vm + per-VM key** → unit + e2e tests, stage 1 (fake) green.
 5. Part E lifecycle endpoints + tests.
 6. Part F `deploy.py`/`provision.sh`/`teardown.sh` + e2e parameterization +
    `scripts/spec.md`.

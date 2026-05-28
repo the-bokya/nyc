@@ -109,6 +109,56 @@ def test_reconciler_endpoint_responds():
     assert "vms" in rep and "volumes" in rep
 
 
+def test_spawn_many_reuse_shared_bridge():
+    # Regression: every spawn uses the default VPC, so VMs landing on the same
+    # node share one bridge. bridge.ensure must be idempotent — a real-mode
+    # exists() bug made the 2nd spawn on a node fail with "File exists".
+    vms = [post(1, "/vms/spawn", {"vm_name": f"sh-{i}-{time.time_ns()}",
+                                  "ssh_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEY sh@nyc"})
+           for i in range(4)]
+    try:
+        assert all(v["status"] == "running" for v in vms)
+        assert len({v["ip"] for v in vms}) == len(vms)  # distinct IPs in the /16
+    finally:
+        for v in vms:
+            httpx.delete(url(1, f"/vms/{v['id']}"), timeout=15.0)
+            httpx.delete(url(1, f"/volumes/{v['data_volume_id']}"), timeout=15.0)
+
+
+def test_live_status_consistent_across_nodes():
+    # Regression: live_status is a per-owner observation. Before the fix a
+    # non-owner node reported "stopped" because it checked its own (empty) local
+    # state. Every node must now agree with the owner.
+    vm = post(1, "/vms/spawn", {"vm_name": f"ls-{time.time_ns()}",
+                                "ssh_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEY ls@nyc"})
+    try:
+        for i in range(1, N + 1):
+            lst = _wait_propagate(i, "/vms", lambda l: any(v["id"] == vm["id"] for v in l))
+            mine = next(v for v in lst if v["id"] == vm["id"])
+            assert mine["live_status"] == "running", f"node{i} list: {mine['live_status']}"
+            one = httpx.get(url(i, f"/vms/{vm['id']}"), timeout=5.0).json()
+            assert one["live_status"] == "running", f"node{i} get: {one['live_status']}"
+    finally:
+        httpx.delete(url(1, f"/vms/{vm['id']}"), timeout=15.0)
+        httpx.delete(url(1, f"/volumes/{vm['data_volume_id']}"), timeout=15.0)
+
+
+def test_spawn_default_vpc_random_node():
+    # No vpc_id / node_id: lands in the default /16, auto-volume, random node.
+    vm = post(1, "/vms/spawn", {"vm_name": f"sp-{time.time_ns()}",
+                                "ssh_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEY e2e@nyc"})
+    try:
+        assert vm["status"] == "running"
+        assert vm["ip"].startswith("172.16.")
+        assert vm["data_volume_id"]
+        assert vm["node_id"] in {n["node_id"] for n in httpx.get(url(1, "/nodes"), timeout=5.0).json()}
+        _wait_propagate(N, "/vms", lambda lst: any(v["id"] == vm["id"] for v in lst))
+        _wait_propagate(N, "/volumes", lambda lst: any(v["id"] == vm["data_volume_id"] for v in lst))
+    finally:
+        httpx.delete(url(1, f"/vms/{vm['id']}"), timeout=15.0)
+        httpx.delete(url(1, f"/volumes/{vm['data_volume_id']}"), timeout=15.0)
+
+
 def test_ssh_into_vm_works():
     """Real boot + real network + real sshd. Skipped under NYC_BACKEND=fake."""
     if os.environ.get("NYC_BACKEND") != "real":

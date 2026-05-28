@@ -15,7 +15,11 @@ of VMs, and they all share one connected transit map (the raft cluster).
 The cross-node networking is documented ground-up in [`NETWORKING.md`](NETWORKING.md).
 
 The full surface is exposed over a REST API at `/vpcs`, `/volumes`, `/vms` —
-plus `POST /reconcile` for forcing an immediate convergence pass.
+plus `POST /reconcile` for forcing an immediate convergence pass. The turnkey
+entrypoint is `POST /vms/spawn {vm_name, ssh_key}`: it places the VM in the
+default VPC on a random node, auto-creates its data volume, and bakes the
+given ssh key into that VM's own rootfs — no vpc/node/volume bookkeeping for
+the caller.
 
 ## Quickstart (single host, three emulated nodes)
 

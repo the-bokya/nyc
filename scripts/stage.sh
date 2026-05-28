@@ -41,14 +41,21 @@ if [[ "$BACKEND" == "real" ]]; then
     [[ -x bin/firecracker ]] || ./scripts/install_firecracker.sh
     [[ -f assets/vmlinux && -f assets/rootfs.ext4 && -f assets/id_ed25519 ]] || ./scripts/fetch_artifacts.sh
     if ! sudo -n /usr/bin/ip -V >/dev/null 2>&1; then
-        echo "real mode needs passwordless sudo for ip/mkfs.ext4/mount/umount/firecracker/kill/truncate/brctl."
+        echo "real mode needs passwordless sudo for ip/bridge/iptables/sysctl/mount/umount/kill/firecracker."
+        echo "(truncate, mkfs.ext4, cp and debugfs run unprivileged — they only touch user-owned files.)"
         echo "install this in /etc/sudoers.d/nyc (via 'sudo visudo -f /etc/sudoers.d/nyc'):"
-        echo "  $USER ALL=(root) NOPASSWD: /usr/bin/ip, /usr/bin/mkfs.ext4, /usr/bin/mount, /usr/bin/umount, /usr/bin/truncate, /usr/bin/kill, /usr/bin/brctl, $PWD/bin/firecracker"
+        echo "  $USER ALL=(root) NOPASSWD: /usr/bin/ip, /usr/sbin/bridge, /usr/sbin/iptables, /usr/sbin/sysctl, /usr/bin/mount, /usr/bin/umount, /usr/bin/kill, $PWD/bin/firecracker"
         exit 2
     fi
 fi
 
-rm -rf stage
+rm -rf stage 2>/dev/null || true
+if [[ -e stage ]]; then
+    echo "stage/ has files this user can't remove — likely root-owned leftovers" >&2
+    echo "from running this script under sudo. nyc itself no longer creates" >&2
+    echo "root-owned files. Clear it once with:  sudo rm -rf stage" >&2
+    exit 1
+fi
 mkdir -p stage
 
 BASE_HTTP=9001
@@ -57,6 +64,20 @@ BASE_RQ_RAFT=14002
 
 PIDS=()
 JOIN_ADDR="127.0.0.1:${BASE_RQ_RAFT}"
+
+# Fail fast if a previous run leaked a node that still holds one of our ports.
+# Otherwise the readiness probe greets the stale zombie, the e2e suite runs
+# against a half-dead cluster, and DB writes hang for minutes.
+for i in $(seq 1 "$N"); do
+    for p in $((BASE_HTTP + i - 1)) $((BASE_RQ_HTTP + (i - 1) * 2)) $((BASE_RQ_RAFT + (i - 1) * 2)); do
+        if ss -ltn 2>/dev/null | grep -qE "[:.]${p}([^0-9]|$)"; then
+            echo "port $p already in use — a previous staging node likely leaked:" >&2
+            ss -ltnp 2>/dev/null | grep -E "[:.]${p}([^0-9]|$)" >&2 || true
+            echo "stop it and retry, e.g.:  pkill -f 'dadar run'; pkill -f rqlited" >&2
+            exit 1
+        fi
+    done
+done
 
 for i in $(seq 1 "$N"); do
     folder="stage/node${i}"
@@ -79,12 +100,22 @@ EOF
 done
 
 cleanup() {
+    local rc=$?   # preserve the real exit status (0 on success, 1 on test fail)
     echo "==> stopping nodes"
+    # Target the node processes by their distinctive cmdlines. A plain
+    # `kill $pid` on the setsid wrapper does NOT take down the detached
+    # uv → python → rqlited tree (bash doesn't forward the signal), so the
+    # node leaks and squats its ports. Killing the python `dadar run` parent
+    # also reaps its (often defunct) rqlited child. We deliberately do NOT
+    # process-group-kill: setsid does not reliably isolate the node into its
+    # own group here, so a negative-pid kill can take out this script too.
+    pkill -TERM -f "dadar run" 2>/dev/null || true
+    pkill -TERM -f rqlited 2>/dev/null || true
     for pid in "${PIDS[@]}"; do
         kill "$pid" 2>/dev/null || true
     done
-    pkill -f rqlited 2>/dev/null || true
-    [[ "$BACKEND" == "real" ]] && _purge_nyc_kernel_state
+    if [[ "$BACKEND" == "real" ]]; then _purge_nyc_kernel_state; fi
+    exit "$rc"
 }
 
 _purge_nyc_kernel_state() {

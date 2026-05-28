@@ -30,12 +30,15 @@ the action functions, not the helpers.
 
 - `fake`: state mutations land in `privops_fake.STATE`. Tests call
   `privops.reset_state()` per-fixture.
-- `real`: `subprocess.run(["sudo", "-n", *argv])`. Requires passwordless
-  sudo for `ip`, `bridge`, `iptables`, `sysctl`, `mkfs.ext4`, `mount`,
-  `umount`, `brctl`, `firecracker`, `kill`, `truncate`. The staging script
-  writes a sudoers fragment scoped to these commands. A missing iptables
-  rule/chain (`-C`/`-nL`) exits non-zero, surfaced as `PrivopsError` — the
-  client uses that for check-then-add idempotency.
+- `real`: `subprocess.run(["sudo", "-n", *argv])` for the kernel/namespace ops
+  — `ip`, `bridge`, `iptables`, `sysctl`, `mount`, `umount`, `firecracker`,
+  `kill`. The file-only ops in `_NO_SUDO` (`truncate`, `mkfs.ext4`, `cp`,
+  `debugfs`) run **unprivileged**: they only touch files the user already owns
+  (the volume image, the per-VM rootfs copy, its authorized_keys), and sudo'ing
+  them would make those root-owned so a later teardown/`rm -rf` as the user
+  fails. The staging script writes a sudoers fragment scoped to the sudo'd set.
+  A missing iptables rule/chain (`-C`/`-nL`) exits non-zero, surfaced as
+  `PrivopsError` — the client uses that for check-then-add idempotency.
 
 The client code never branches on backend — only `privops.run()` does.
 

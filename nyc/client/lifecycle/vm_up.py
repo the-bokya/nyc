@@ -15,7 +15,7 @@ from nyc.client.env import setup as env_setup
 from nyc.client.network import bridge, namespace, nat, ns_bridge, tap, veth, vxlan
 from nyc.client.network.allocate import gateway_cidr
 from nyc.client.network.overlay import anycast_mac, vni_for
-from nyc.client.vm import boot, config, create
+from nyc.client.vm import boot, config, create, inject_key
 from nyc.client.volume import attach
 
 
@@ -35,10 +35,17 @@ class VmSpec:
     node_host: str = "127.0.0.1"
     peer_hosts: list = field(default_factory=list)
     dns: str = "1.1.1.1"
+    # When set, give this VM its own rootfs copy with this pubkey baked in.
+    ssh_pubkey: str | None = None
+    vcpu_count: int = 1
+    mem_mib: int = 512
 
 
 def run(spec: VmSpec) -> Path:
-    paths = env_setup.run(spec.vms_dir, spec.vm_id, spec.assets)
+    paths = env_setup.run(spec.vms_dir, spec.vm_id, spec.assets,
+                          copy_rootfs=spec.ssh_pubkey is not None)
+    if spec.ssh_pubkey is not None:
+        inject_key.run(paths.rootfs, spec.ssh_pubkey)
     if spec.data_volume_path is not None:
         attach.run(paths.root, spec.data_volume_path)
     _network(spec)
@@ -85,6 +92,7 @@ def _spawn(paths, spec: VmSpec) -> None:
     cfg = config.VmConfig(vm_id=spec.vm_id, tap_name="tap0", mac=_mac(spec.vm_id),
                           guest_ip=spec.ip, cidr=spec.cidr,
                           has_data_volume=spec.data_volume_path is not None,
+                          vcpu_count=spec.vcpu_count, mem_mib=spec.mem_mib,
                           dns=spec.dns)
     config.build(paths, cfg)
     create.run(paths, spec.vm_id, _ns_name(spec.vm_id), spec.firecracker_bin)
