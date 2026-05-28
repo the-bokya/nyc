@@ -9,7 +9,7 @@ belong in `nyc.client`. Routers compose: ORM read → client call → ORM write.
 | `volumes.py`   | `/volumes`       | Node-bound. POST/DELETE proxy via `_proxy.forward`. |
 | `vms.py`       | `/vms`           | Node-bound. POST runs the full lifecycle composer. |
 | `reconcile.py` | `/reconcile`     | POST triggers one immediate reconciler pass on the receiving node. |
-| `_proxy.py`    | (helper)         | Looks up `nodes.http_port` and forwards via httpx. |
+| `_proxy.py`    | (helper)         | Looks up `nodes.host` + `nodes.http_port` and forwards via httpx over the private network. |
 
 Patterns:
 - 400 for bad input (unknown vpc_id, bad cidr).

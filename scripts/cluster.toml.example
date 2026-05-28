@@ -1,0 +1,30 @@
+# nyc bare-metal inventory. Copy to cluster.toml and fill in.
+# Used by scripts/preflight.py (and, later, scripts/deploy.py).
+
+[cluster]
+ssh_user   = "ubuntu"                                # passwordless-sudo login user
+ref        = "main"                                  # equator git ref to deploy
+repo_url   = "git@github.com:the-bokya/equator.git"  # cloned recursively via forwarded agent
+remote_dir = "~/equator"                             # checkout location on each node
+vpc_cidr   = "172.16.0.0/16"                          # default VPC; MUST NOT overlap the underlay
+dns        = "1.1.1.1"                                # resolver baked into guest VMs
+http_port  = 8000
+rqlite_http_port = 4001
+rqlite_raft_port = 4002
+
+# One node must have bootstrap = true; the rest join it.
+# host        = private/underlay IP (raft + cross-node proxy + VXLAN endpoints)
+# public_host = public IPv4 (control reaches it here; ssh jump server)
+# domain      = public DNS name (Caddy automatic HTTPS); must resolve to public_host
+[[nodes]]
+name = "n1"
+host = "10.0.0.11"
+public_host = "203.0.113.1"
+domain = "n1.example.com"
+bootstrap = true
+
+[[nodes]]
+name = "n2"
+host = "10.0.0.12"
+public_host = "203.0.113.2"
+domain = "n2.example.com"
