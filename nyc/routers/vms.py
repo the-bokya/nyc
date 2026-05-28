@@ -3,6 +3,7 @@
 Node selection: explicit `node_id` in body wins; otherwise the receiving node
 takes it. Production might want a scheduler — out of scope for now.
 """
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +13,7 @@ from dadar.orm import Client
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from nyc import peers
 from nyc.client.lifecycle import vm_down, vm_up
 from nyc.client.network.allocate import pick_ip
 from nyc.client.vm import status as vm_status
@@ -76,16 +78,23 @@ def _create_local(body: VmIn, node_id: str, client: Client) -> dict:
 
 
 def _bring_up(row: dict, cidr: str, vol_path: Path | None, client: Client) -> None:
+    vm_up.run(_spec(row, cidr, vol_path, client))
+    Vms(client).docs.update(where={"id": row["id"]}, set={"status": "running"})
+    row["status"] = "running"
+
+
+def _spec(row: dict, cidr: str, vol_path: Path | None, client: Client) -> "vm_up.VmSpec":
     paths = resolve()
-    spec = vm_up.VmSpec(
-        vm_id=row["id"], node_id=row["node_id"], vpc_id=row["vpc_id"],
+    node_id = row["node_id"]
+    return vm_up.VmSpec(
+        vm_id=row["id"], node_id=node_id, vpc_id=row["vpc_id"],
         ip=row["ip"], cidr=cidr, data_volume_path=vol_path,
         assets={"rootfs": paths.rootfs, "kernel": paths.kernel, "ssh_key": paths.ssh_key},
         vms_dir=paths.vms_dir, firecracker_bin=paths.firecracker_bin,
+        node_host=peers.node_host(client, node_id),
+        peer_hosts=peers.peer_hosts(client, node_id),
+        dns=os.environ.get("NYC_VM_DNS", "1.1.1.1"),
     )
-    vm_up.run(spec)
-    Vms(client).docs.update(where={"id": row["id"]}, set={"status": "running"})
-    row["status"] = "running"
 
 
 def _delete_local(vm_id: str, client: Client) -> None:

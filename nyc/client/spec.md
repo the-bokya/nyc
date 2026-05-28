@@ -9,11 +9,16 @@ above it.
 ```
 env/       per-VM directory setup (rootfs symlink, kernel symlink, ssh key)
 vm/        firecracker process lifecycle + JSON config builder
-network/   netns, taps, bridges, IP allocation
+network/   netns, taps, bridges, VXLAN overlay, NAT, IP allocation
 volume/    data volume create/delete
-privops.py sudo shim + backend selector
+privops.py sudo shim + backend selector (exports PrivopsError)
 privops_fake.py in-memory state mutator for NYC_BACKEND=fake
 ```
+
+`network/` is the bulk of the surface — per-VPC anycast bridges joined across
+nodes by a VXLAN tunnel, plus iptables NAT for internet egress. See
+`network/spec.md` for the per-module contract and `../../NETWORKING.md` for
+ground-up concepts.
 
 Every action is a file with one public `run(...)` function ≤ 12 lines.
 Helpers stay in the same file (also ≤ 12 lines). Cross-file imports prefer
@@ -26,29 +31,35 @@ the action functions, not the helpers.
 - `fake`: state mutations land in `privops_fake.STATE`. Tests call
   `privops.reset_state()` per-fixture.
 - `real`: `subprocess.run(["sudo", "-n", *argv])`. Requires passwordless
-  sudo for `ip`, `mkfs.ext4`, `mount`, `umount`, `brctl`, `firecracker`,
-  `kill`, `truncate`. The staging script writes a sudoers fragment scoped to
-  these commands.
+  sudo for `ip`, `bridge`, `iptables`, `sysctl`, `mkfs.ext4`, `mount`,
+  `umount`, `brctl`, `firecracker`, `kill`, `truncate`. The staging script
+  writes a sudoers fragment scoped to these commands. A missing iptables
+  rule/chain (`-C`/`-nL`) exits non-zero, surfaced as `PrivopsError` — the
+  client uses that for check-then-add idempotency.
 
 The client code never branches on backend — only `privops.run()` does.
 
 ## Lifecycle in one screen
 
+`lifecycle/vm_up.run(spec)` composes bring-up (see `network/spec.md` for the
+full interface layout):
+
 ```
 env.setup(vm_dir, vm_id)        → writes rootfs symlink, kernel symlink, ssh key
+network.bridge.ensure(br, gateway_cidr, mac=anycast_mac(vpc))  → anycast gateway
+network.vxlan.ensure + set_fdb  → per-VPC tunnel to peers (skipped single-host)
+network.nat.ensure(cidr)        → ip_forward + masquerade for internet egress
 network.namespace.create(ns)
-network.tap.create(ns, tap, ip, peer_ip)
-network.bridge.ensure(br, cidr)
-network.bridge.attach(br, host_veth)
-vm.config.build(vm_dir, cfg)    → firecracker JSON config on disk
+veth pair → place ns side → attach host side to bridge → up
+network.ns_bridge.create(ns) + tap.create(ns, tap0) joined in nbr0
+vm.config.build(vm_dir, cfg)    → firecracker JSON config on disk (incl. dns)
 vm.create.run(vm_dir, cfg)      → spawns `firecracker --api-sock ... --config ...`
 vm.boot.run(vm_dir, cfg)        → issues InstanceStart over the API socket
-vm.status.run(vm_dir)           → returns "running" | "stopped"
-vm.kill.run(vm_dir)             → SIGTERM, then SIGKILL after grace
-network.tap.delete(ns, tap)
-network.namespace.delete(ns)
-env.teardown(vm_dir)            → rm -rf vm_dir
 ```
+
+Teardown (`lifecycle/vm_down`) deletes the netns first — the kernel auto-removes
+the ns-side veth, `nbr0`, and `tap0`; only the host-side veth needs an explicit
+delete. Per-VPC infra (bridge, VXLAN, NAT) is shared and outlives a single VM.
 
 Data volume:
 

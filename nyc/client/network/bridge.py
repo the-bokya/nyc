@@ -11,9 +11,11 @@ def name_for(node_id: str, vpc_id: str) -> str:
     return f"br-{node_id[:4]}-{vpc_id[:4]}"
 
 
-def ensure(bridge: str, host_ip_cidr: str) -> None:
+def ensure(bridge: str, host_ip_cidr: str, mac: str | None = None) -> None:
     if not exists(bridge):
         privops.run(["ip", "link", "add", bridge, "type", "bridge"])
+        if mac:  # anycast gateway: same MAC on every node for this VPC
+            privops.run(["ip", "link", "set", bridge, "address", mac])
         privops.run(["ip", "addr", "add", host_ip_cidr, "dev", bridge])
         privops.run(["ip", "link", "set", bridge, "up"])
 

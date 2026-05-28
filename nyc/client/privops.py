@@ -16,11 +16,9 @@ import os
 import subprocess
 from typing import Callable
 
-from nyc.client.privops_fake import fake_run, reset_state, STATE  # re-export
-
-
-class PrivopsError(RuntimeError):
-    pass
+# PrivopsError lives in privops_fake so the fake backend can raise it too
+# (e.g. `iptables -C` miss) without a circular import.
+from nyc.client.privops_fake import fake_run, reset_state, STATE, PrivopsError  # re-export
 
 
 def backend() -> str:

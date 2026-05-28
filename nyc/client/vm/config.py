@@ -22,6 +22,7 @@ class VmConfig:
     has_data_volume: bool = False
     vcpu_count: int = 1
     mem_mib: int = 512
+    dns: str = "1.1.1.1"
 
 
 def build(paths: VmPaths, cfg: VmConfig) -> Path:
@@ -41,7 +42,10 @@ def _payload(paths: VmPaths, cfg: VmConfig) -> dict:
 
 
 def _boot_args(cfg: VmConfig) -> str:
-    ip = f"ip={cfg.guest_ip}::{gateway(cfg.cidr)}:{netmask(cfg.cidr)}::eth0:off"
+    # ip=<client>:<server>:<gw>:<netmask>:<host>:<dev>:<autoconf>:<dns0>
+    # The trailing dns0 field seeds the guest resolver at kernel init; we also
+    # bake /etc/resolv.conf into the rootfs since some images ignore it.
+    ip = f"ip={cfg.guest_ip}::{gateway(cfg.cidr)}:{netmask(cfg.cidr)}::eth0:off:{cfg.dns}"
     return f"console=ttyS0 reboot=k panic=1 pci=off {ip}"
 
 

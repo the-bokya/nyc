@@ -33,5 +33,8 @@ fi
 INJECT_KEY="${NYC_SSH_PUBKEY:-$KEY.pub}"
 ./scripts/inject_ssh_key.sh "$INJECT_KEY"
 
+# Bake a resolver so guests have working DNS (internet access). Override with $NYC_VM_DNS.
+./scripts/inject_resolv.sh "${NYC_VM_DNS:-1.1.1.1}"
+
 echo "assets ready in assets/"
 ls -lh "$KERNEL" "$ROOTFS" "$KEY" "$KEY.pub"

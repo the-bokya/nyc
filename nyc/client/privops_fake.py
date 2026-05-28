@@ -12,7 +12,20 @@ from __future__ import annotations
 
 from typing import Any
 
+
+class PrivopsError(RuntimeError):
+    """Raised on a non-zero privileged op. Defined here (not in privops.py) so
+    the fake backend can raise the same type real `sudo` failures produce —
+    e.g. `iptables -C`/`-nL` misses, which the client uses for idempotency."""
+
+
 STATE: dict[str, Any] = {}
+
+# Built-in chains per iptables table — seeded so chain-existence checks behave.
+_IPT_BUILTIN = {
+    "filter": {"INPUT", "FORWARD", "OUTPUT"},
+    "nat":    {"PREROUTING", "INPUT", "OUTPUT", "POSTROUTING"},
+}
 
 
 def reset_state() -> None:
@@ -26,6 +39,10 @@ def reset_state() -> None:
         "files":     {},          # path -> size_bytes
         "mounts":    {},          # mountpoint -> source
         "fc_socks":  {},          # api_sock_path -> {"vm_dir": str, "running": bool}
+        "sysctl":    {},          # key -> value
+        "fdb":       {},          # dev -> {(mac, dst)}
+        "iptables":  {t: {"chains": set(c), "builtin": set(c), "rules": {}}
+                      for t, c in _IPT_BUILTIN.items()},
     })
 
 
@@ -92,6 +109,8 @@ def _link(argv, _input):
             link["netns"] = argv[argv.index("netns") + 1]
         if "master" in argv:
             link["master"] = argv[argv.index("master") + 1]
+        if "address" in argv:
+            link["address"] = argv[argv.index("address") + 1]
     elif op == "del" or op == "delete":
         STATE["links"].pop(argv[3], None)
         STATE["addrs"].pop(argv[3], None)
@@ -182,6 +201,79 @@ def _kill(argv, _input):
     return ""
 
 
+def _sysctl(argv, _input):
+    # ["sysctl", "-w", "key=value"]
+    if "-w" in argv:
+        key, _, val = argv[argv.index("-w") + 1].partition("=")
+        STATE["sysctl"][key] = val
+    return ""
+
+
+def _bridge(argv, _input):
+    # ["bridge", "fdb", "append|del|show", ...]
+    if len(argv) < 3 or argv[1] != "fdb":
+        return ""
+    op, dev = argv[2], argv[argv.index("dev") + 1]
+    if op == "show":
+        rows = STATE["fdb"].get(dev, set())
+        return "".join(f"{m} dev {dev} dst {d} self permanent\n" for m, d in sorted(rows))
+    entry = (argv[3], argv[argv.index("dst") + 1])
+    bucket = STATE["fdb"].setdefault(dev, set())
+    bucket.add(entry) if op in ("append", "add", "replace") else bucket.discard(entry)
+    return ""
+
+
+def _iptables(argv, _input):
+    args = argv[1:]
+    table = "filter"
+    if "-t" in args:
+        i = args.index("-t"); table = args[i + 1]; args = args[:i] + args[i + 2:]
+    t = STATE["iptables"].setdefault(table, {"chains": set(), "builtin": set(), "rules": {}})
+    fn = _IPT_OPS.get(args[0]) if args else None
+    return fn(t, args[1:]) if fn else ""
+
+
+def _ipt_new(t, a):       # -N CHAIN
+    t["chains"].add(a[0]); t["rules"].setdefault(a[0], []); return ""
+
+
+def _ipt_list(t, a):      # -nL [CHAIN] — raise if a named chain is absent
+    if a and a[0] not in t["chains"]:
+        raise PrivopsError(f"iptables: No chain/target/match by that name ({a[0]})")
+    return ""
+
+
+def _ipt_check(t, a):     # -C CHAIN rule... — raise if the exact rule is absent
+    if tuple(a[1:]) not in t["rules"].get(a[0], []):
+        raise PrivopsError("iptables: Bad rule (does a matching rule exist in that chain?)")
+    return ""
+
+
+def _ipt_append(t, a):    # -A CHAIN rule...
+    t["rules"].setdefault(a[0], []).append(tuple(a[1:])); return ""
+
+
+def _ipt_delete(t, a):    # -D CHAIN rule...
+    lst = t["rules"].get(a[0], [])
+    if tuple(a[1:]) in lst:
+        lst.remove(tuple(a[1:]))
+    return ""
+
+
+def _ipt_flush(t, a):     # -F [CHAIN]
+    targets = [a[0]] if a else list(t["rules"])
+    for c in targets:
+        t["rules"][c] = []
+    return ""
+
+
+def _ipt_xchain(t, a):    # -X [CHAIN]
+    drop = [a[0]] if a else [c for c in t["chains"] if c not in t["builtin"]]
+    for c in drop:
+        t["chains"].discard(c); t["rules"].pop(c, None)
+    return ""
+
+
 def _dir_of(path: str):
     from pathlib import Path
     return Path(path).parent
@@ -195,6 +287,17 @@ _IP_SUB = {
     "tuntap": _tuntap,
 }
 
+_IPT_OPS = {
+    "-N": _ipt_new,
+    "-nL": _ipt_list,
+    "-L": _ipt_list,
+    "-C": _ipt_check,
+    "-A": _ipt_append,
+    "-D": _ipt_delete,
+    "-F": _ipt_flush,
+    "-X": _ipt_xchain,
+}
+
 _HANDLERS = {
     "ip":          _ip,
     "brctl":       _brctl,
@@ -204,4 +307,7 @@ _HANDLERS = {
     "umount":      _umount,
     "firecracker": _firecracker,
     "kill":        _kill,
+    "sysctl":      _sysctl,
+    "bridge":      _bridge,
+    "iptables":    _iptables,
 }

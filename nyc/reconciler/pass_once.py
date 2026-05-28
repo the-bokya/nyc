@@ -6,6 +6,7 @@ DB is source of truth. For each local resource owned by this node:
 """
 from dadar.orm import Client
 
+from nyc.reconciler.overlay_pass import reconcile as reconcile_overlay
 from nyc.reconciler.vms_pass import reconcile as reconcile_vms
 from nyc.reconciler.volumes_pass import reconcile as reconcile_volumes
 
@@ -13,4 +14,5 @@ from nyc.reconciler.volumes_pass import reconcile as reconcile_volumes
 def run(client: Client, node_id: str) -> dict:
     vms = reconcile_vms(client, node_id)
     vols = reconcile_volumes(client, node_id)
-    return {"vms": vms, "volumes": vols}
+    overlay = reconcile_overlay(client, node_id)
+    return {"vms": vms, "volumes": vols, "overlay": overlay}

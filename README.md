@@ -8,9 +8,11 @@ of VMs, and they all share one connected transit map (the raft cluster).
 ## What it does
 
 - Per-node Firecracker microVMs with isolated `/dev/net/tun` taps in Linux network namespaces.
-- Cluster-wide VPCs (CIDR-scoped private networks). VMs in the same VPC see each other on a node-local Linux bridge today; cross-node overlay is on the roadmap.
+- Cluster-wide VPCs (CIDR-scoped private networks). VMs in the same VPC reach each other across nodes over a per-VPC VXLAN overlay; the VPC bridge is an anycast gateway, so VMs also get internet access (NAT) through their local node.
 - Read-only shared rootfs; per-VM read/write data volumes (files for now, LVM later).
-- DB-is-source-of-truth: a background reconciler kills orphan VMs/taps/volumes and recreates rows whose backing resource went missing.
+- DB-is-source-of-truth: a background reconciler kills orphan VMs/taps/volumes, recreates rows whose backing resource went missing, and re-syncs each VPC's VXLAN flood list as nodes join/leave.
+
+The cross-node networking is documented ground-up in [`NETWORKING.md`](NETWORKING.md).
 
 The full surface is exposed over a REST API at `/vpcs`, `/volumes`, `/vms` —
 plus `POST /reconcile` for forcing an immediate convergence pass.
@@ -42,14 +44,16 @@ nyc/
 │   ├── client/           # Firecracker client — no HTTP, callable from anywhere
 │   │   ├── env/          # one-shot per-VM directory setup
 │   │   ├── vm/           # boot, kill, status, ssh, config
-│   │   ├── network/      # netns, tap, bridge, IP allocator
+│   │   ├── network/      # netns, tap, bridge, VXLAN overlay, NAT, IP allocator
 │   │   ├── volume/       # data volume create/delete
 │   │   └── privops.py    # sudo shim (real | fake), selected by NYC_BACKEND
 │   └── reconciler/       # background convergence loop
 ├── tests/                # pytest, NYC_BACKEND=fake
 ├── scripts/
 │   ├── install_firecracker.sh
-│   ├── fetch_artifacts.sh
+│   ├── fetch_artifacts.sh    # + inject_ssh_key.sh / inject_resolv.sh (bake key + DNS)
+│   ├── preflight.py          # read-only SSH probe: do the bare-metal nodes meet constraints?
+│   ├── cluster.toml.example  # bare-metal inventory schema
 │   └── stage.sh
 └── assets/               # populated by fetch_artifacts.sh
 ```
