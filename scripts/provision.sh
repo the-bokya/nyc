@@ -22,6 +22,9 @@ NODE_FOLDER="$NYC_DIR/node"
 CADDYFILE="$NODE_FOLDER/Caddyfile"
 SUDOERS=/etc/sudoers.d/nyc
 SYSCTL=/etc/sysctl.d/99-nyc.conf
+# Pre-`up` snapshots live OUTSIDE the checkout (the checkout doesn't exist yet
+# when we take them, and --purge removes it) so teardown can always find them.
+STATE_DIR="$HOME/.nyc"
 
 log() { printf '\n[provision %s] %s\n' "$NODE_NAME" "$*"; }
 
@@ -49,8 +52,8 @@ preflight() {
 
 install_packages() {
     log "apt packages + uv + caddy"
-    mkdir -p "$NODE_FOLDER"
-    dpkg -l | awk '/^ii/{print $2}' | sort >"$NODE_FOLDER/.pre_pkgs" || true
+    mkdir -p "$STATE_DIR"
+    [ -f "$STATE_DIR/pre_pkgs" ] || dpkg -l | awk '/^ii/{print $2}' | sort >"$STATE_DIR/pre_pkgs"
     sudo -n apt-get update -y
     sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y \
         git curl e2fsprogs iproute2 iptables ca-certificates
@@ -72,16 +75,19 @@ install_caddy() {
 }
 
 sync_repo() {
+    # init-in-place (not `git clone`) so this is idempotent whether the dir is
+    # absent, an empty/leftover dir, or an existing checkout. `fetch <ref>` +
+    # `checkout FETCH_HEAD` resolves a branch, tag, or SHA uniformly.
     log "sync repo @ $REF"
-    if [ -d "$REMOTE_DIR/.git" ]; then
-        git -C "$REMOTE_DIR" fetch --recurse-submodules origin
-        git -C "$REMOTE_DIR" checkout "$REF"
-        git -C "$REMOTE_DIR" submodule update --init --recursive
-    else
-        git clone --recurse-submodules "$REPO_URL" "$REMOTE_DIR"
-        git -C "$REMOTE_DIR" checkout "$REF"
-        git -C "$REMOTE_DIR" submodule update --init --recursive
+    mkdir -p "$REMOTE_DIR"
+    if [ ! -d "$REMOTE_DIR/.git" ]; then
+        git -C "$REMOTE_DIR" init -q
+        git -C "$REMOTE_DIR" remote add origin "$REPO_URL"
     fi
+    git -C "$REMOTE_DIR" remote set-url origin "$REPO_URL"
+    git -C "$REMOTE_DIR" fetch origin "$REF"
+    git -C "$REMOTE_DIR" checkout -f FETCH_HEAD
+    git -C "$REMOTE_DIR" submodule update --init --recursive
 }
 
 uv_sync() {
@@ -131,8 +137,9 @@ bake_rootfs() {
 
 enable_ip_forward() {
     log "ip_forward"
-    [ -f "$NODE_FOLDER/.pre_ip_forward" ] || \
-        cat /proc/sys/net/ipv4/ip_forward >"$NODE_FOLDER/.pre_ip_forward"
+    mkdir -p "$STATE_DIR"
+    [ -f "$STATE_DIR/pre_ip_forward" ] || \
+        cat /proc/sys/net/ipv4/ip_forward >"$STATE_DIR/pre_ip_forward"
     echo "net.ipv4.ip_forward=1" | sudo -n tee "$SYSCTL" >/dev/null
     sudo -n sysctl --system >/dev/null
 }
@@ -151,6 +158,7 @@ EOF
 
 init_node() {
     log "dadar init"
+    mkdir -p "$NODE_FOLDER"
     ( cd "$NODE_FOLDER" && "$(uv_bin)" run --project "$NYC_DIR" dadar init \
         --host "$NODE_HOST" --public-host "$PUBLIC_HOST" --domain "$DOMAIN" \
         --http-port "$HTTP_PORT" --rqlite-http-port "$RQLITE_HTTP_PORT" \
