@@ -163,15 +163,15 @@ def test_ssh_into_vm_works():
     """Real boot + real network + real sshd. Skipped under NYC_BACKEND=fake."""
     if os.environ.get("NYC_BACKEND") != "real":
         pytest.skip("ssh requires NYC_BACKEND=real")
-    nodes = httpx.get(url(1, "/nodes"), timeout=5.0).json()
-    vpc = post(1, "/vpcs", {"name": f"ssh-{time.time_ns()}", "cidr": "10.222.0.0/24"})
-    vm = post(1, "/vms", {"name": "sshable", "vpc_id": vpc["id"], "node_id": nodes[0]["node_id"]})
+    pubkey = open("assets/id_ed25519.pub").read().strip()
+    vm = post(1, "/vms/spawn", {"vm_name": f"ssh-{time.time_ns()}", "ssh_key": pubkey})
     try:
         _wait_ssh(vm["ip"], timeout=90.0)
         out = _ssh(vm["ip"], "echo nyc-ok && uname -n")
         assert "nyc-ok" in out
     finally:
         httpx.delete(url(1, f"/vms/{vm['id']}"), timeout=15.0)
+        httpx.delete(url(1, f"/volumes/{vm['data_volume_id']}"), timeout=15.0)
 
 
 def _ssh(ip: str, cmd: str) -> str:

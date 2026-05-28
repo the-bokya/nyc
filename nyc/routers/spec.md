@@ -43,9 +43,9 @@ mem_mib=512}` — deliberately **no `vpc_id`, no `node_id`**.
   never appears in the request body — it is an internal hop, not API surface.)
 - **Volume**: a per-VM data volume is auto-created on the target node and
   tracked in `volumes` (named `<vm_name>-data`); its id is stored on the VM row.
-- **Key + mount**: `ssh_key` and the `/home` data-volume mount are delivered via
-  a cloud-init NoCloud seed disk (`vm.seed.create`). The rootfs is a per-VM CoW
-  copy (`env.setup`) and is writable — the shared base image is never modified.
+- **Key + mount**: `ssh_key`, `/etc/resolv.conf`, and the `/home` data-volume
+  fstab entry are written via offline debugfs edits (`vm.inject.run`) on the
+  per-VM rootfs copy. The shared base image is never modified.
 
 `DELETE /vms/{id}` currently removes the VM only — it does **not** cascade to
 the auto-created volume. (Open question for the lifecycle work: should it?)

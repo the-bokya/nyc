@@ -24,20 +24,22 @@ this.
 ## Bring-up order (`vm_up`)
 
 1. `env.setup` — CoW-copy rootfs (writable per-VM), symlink kernel + ssh key.
-2. `vm.seed.create` — write a 1 MiB cloud-init NoCloud seed disk (`seed.ext4`,
-   label `cidata`). Contains `meta-data` (instance-id + hostname) and
-   `user-data` (cloud-config: SSH authorized key if provided; `/dev/vdb →
-   /home` mount if a data volume is attached).
+2. `vm.inject.run` — one debugfs session on the per-VM rootfs copy:
+   - `/root/.ssh/authorized_keys` — writes `ssh_pubkey` (if provided)
+   - `/etc/resolv.conf` — writes `nameserver <dns>` (always)
+   - `/etc/fstab` — adds `/dev/vdb /home ext4 defaults,nofail` (if data volume)
+
+   The Firecracker Ubuntu CI image has no cloud-init; offline debugfs edits on
+   the per-VM copy are the only way to inject per-VM config at rest.
 3. If `data_volume_path`: `volume.attach` it as `data.ext4`.
 4. `_network`: ensure the VPC bridge (with gateway IP) → create netns →
    veth pair (host side joins the VPC bridge) → in-netns `nbr0` + `tap0`.
 5. `_spawn`: build `VmConfig` → `config.build` → `vm.create` (inside the
    netns) → `vm.boot`.
 
-Drive order in the Firecracker config determines `/dev/vd*` names in the guest:
-- `vda` rootfs — writable, `is_root_device=true`
-- `vdb` data   — present only when `data_volume_path` is set; cloud-init mounts at `/home`
-- `vdb`/`vdc` seed — always present; read-only cidata disk consumed by cloud-init
+Drive order in the Firecracker config:
+- `vda` rootfs — writable per-VM copy, `is_root_device=true`
+- `vdb` data   — present only when `data_volume_path` is set; fstab mounts at `/home`
 
 The guest MAC is derived deterministically from `vm_id` (`_mac`), and the
 netns/veth names from `vm_id[:8]` (`_ns_name`, `_veth_names`) — so the same VM

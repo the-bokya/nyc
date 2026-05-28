@@ -3,7 +3,6 @@
 ```
 <vms_dir>/<vm_id>/
 ├── rootfs.ext4   per-VM CoW copy of assets/rootfs.ext4 (writable)
-├── seed.ext4     cloud-init NoCloud seed (cidata label)
 ├── vmlinux       -> symlink to assets/vmlinux
 ├── id_ed25519    -> symlink to assets/id_ed25519 (private key for ssh-in)
 ├── id_ed25519.pub
@@ -23,8 +22,6 @@ class VmPaths:
 
     @property
     def rootfs(self) -> Path:  return self.root / "rootfs.ext4"
-    @property
-    def seed(self) -> Path:    return self.root / "seed.ext4"
     @property
     def kernel(self) -> Path:  return self.root / "vmlinux"
     @property

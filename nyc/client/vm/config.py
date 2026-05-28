@@ -1,13 +1,11 @@
 """Build the firecracker JSON config the binary reads on `--config-file`.
 
 Kernel boot args include `ip=<vm>::<gw>:<netmask>::eth0:off` so the guest's
-eth0 is configured at kernel init time, before userspace runs. This is what
-makes SSH-to-guest work without a DHCP server.
+eth0 is configured at kernel init time, before userspace runs.
 
 Drive order (determines /dev/vd* names in guest):
   vda  rootfs   — writable per-VM copy, is_root_device=true
-  vdb  data     — present only when has_data_volume; cloud-init mounts at /home
-  vdc  seed     — cloud-init NoCloud cidata (or vdb when no data volume)
+  vdb  data     — present only when has_data_volume; fstab mounts it at /home
 """
 import json
 from dataclasses import dataclass
@@ -37,10 +35,7 @@ def build(paths: VmPaths, cfg: VmConfig) -> Path:
 
 
 def _payload(paths: VmPaths, cfg: VmConfig) -> dict:
-    drives = [_root_drive(paths)]
-    if cfg.has_data_volume:
-        drives.append(_data_drive(paths))
-    drives.append(_seed_drive(paths))
+    drives = [_root_drive(paths)] + ([_data_drive(paths)] if cfg.has_data_volume else [])
     return {
         "boot-source":        {"kernel_image_path": str(paths.kernel), "boot_args": _boot_args(cfg)},
         "drives":             drives,
@@ -60,7 +55,3 @@ def _root_drive(paths: VmPaths) -> dict:
 
 def _data_drive(paths: VmPaths) -> dict:
     return {"drive_id": "data",   "path_on_host": str(paths.data),   "is_root_device": False, "is_read_only": False}
-
-
-def _seed_drive(paths: VmPaths) -> dict:
-    return {"drive_id": "seed",   "path_on_host": str(paths.seed),   "is_root_device": False, "is_read_only": True}

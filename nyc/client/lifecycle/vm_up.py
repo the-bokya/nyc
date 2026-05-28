@@ -15,7 +15,7 @@ from nyc.client.env import setup as env_setup
 from nyc.client.network import bridge, namespace, nat, ns_bridge, tap, veth, vxlan
 from nyc.client.network.allocate import gateway_cidr
 from nyc.client.network.overlay import anycast_mac, vni_for
-from nyc.client.vm import boot, config, create, seed
+from nyc.client.vm import boot, config, create, inject
 from nyc.client.volume import attach
 
 
@@ -41,8 +41,8 @@ class VmSpec:
 
 def run(spec: VmSpec) -> Path:
     paths = env_setup.run(spec.vms_dir, spec.vm_id, spec.assets)
-    seed.create(paths, spec.vm_id, spec.vm_name, spec.ssh_pubkey,
-                has_data_volume=spec.data_volume_path is not None)
+    inject.run(paths, spec.ssh_pubkey, spec.dns,
+               has_data_volume=spec.data_volume_path is not None)
     if spec.data_volume_path is not None:
         attach.run(paths.root, spec.data_volume_path)
     _network(spec)

@@ -28,13 +28,7 @@ if [[ ! -f "$KEY" ]]; then
     ssh-keygen -t ed25519 -N "" -f "$KEY" -q
 fi
 
-# Inject the public key into the rootfs so VMs accept it for root login.
-# Override with $NYC_SSH_PUBKEY to bake a different key in (e.g. ~/.ssh/id_ed25519.pub).
-INJECT_KEY="${NYC_SSH_PUBKEY:-$KEY.pub}"
-./scripts/inject_ssh_key.sh "$INJECT_KEY"
-
-# Bake a resolver so guests have working DNS (internet access). Override with $NYC_VM_DNS.
-./scripts/inject_resolv.sh "${NYC_VM_DNS:-1.1.1.1}"
+# DNS and SSH keys are delivered per-VM via cloud-init seed disk; no rootfs patching needed.
 
 echo "assets ready in assets/"
 ls -lh "$KERNEL" "$ROOTFS" "$KEY" "$KEY.pub"
