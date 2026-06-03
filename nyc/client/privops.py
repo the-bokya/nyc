@@ -21,11 +21,12 @@ from typing import Callable
 from nyc.client.privops_fake import fake_run, reset_state, STATE, PrivopsError  # re-export
 
 
-# These only ever touch plain files the invoking user owns (the volume image,
-# the per-VM rootfs copy, its authorized_keys). Running them under sudo would
-# make those files root-owned, so a later `rm -rf stage` (or teardown) as the
-# user fails. Run them unprivileged; only the real kernel/namespace ops sudo.
-_NO_SUDO = {"truncate", "mkfs.ext4", "cp", "debugfs"}
+# `truncate` only ever creates the loopback backing image — a plain file the
+# invoking user owns, so it stays unprivileged (sudo'ing it would make it
+# root-owned and break a later user `rm -rf`/teardown). Everything else —
+# LVM, losetup, dm, and the `mkfs.ext4`/`debugfs`/`dd` that now target
+# root-owned LV device nodes — runs under sudo.
+_NO_SUDO = {"truncate"}
 
 
 def backend() -> str:

@@ -51,7 +51,7 @@ small dense per-(node,vpc) index in the DB.
 
 `DELETE /vms` (`routers/vms.py:_delete_local`) does not cascade to the auto data
 volume created by `/vms/spawn` (open question, `routers/spec.md`). The volume
-row+file leak and `volumes_pass` won't reap them (they have a row). Decide:
+row + thin LV leak and `volumes_pass` won't reap them (they have a row). Decide:
 cascade when `data_volume_id` points at an auto volume, or track ownership
 explicitly and let TTL/delete clean it.
 
@@ -61,17 +61,32 @@ explicitly and let TTL/delete clean it.
 check that it is alive, nor any capacity/VM-count signal. It can place on a dead
 or full node. Fix: filter by recent liveness and bias by current VM/volume load.
 
-## Per-VM rootfs: stop full-copying
+## Cross-node golden images (clone is node-local today)
 
-Every VM gets a full CoW copy of the rootfs (`client/env/setup.py`), ~300 MB on
-filesystems without reflink. Replace with an overlayfs upper layer over the
-shared read-only base, or keep the base read-only and inject per-VM config via
-MMDS + a tiny guest agent instead of offline `debugfs` (`client/vm/inject.py`).
+Snapshots/goldens are node-local thin LVs (device-mapper objects); LVM has no
+native cross-node send/receive. So `POST /vms/spawn {image}` pins to the
+image's owner node and verifies same-node (`routers/vms.py:_resolve_image`,
+409 otherwise). To spawn from *any* node's golden, the way forward is an
+**image registry**: treat goldens as immutable, content-addressed artifacts,
+publish them (sparse/compressed) to a shared blob store (MinIO/S3, or a dadar
+blob endpoint), and have a node pull + import a golden into its local thin pool
+on demand, caching by content hash — exactly how container images distribute.
+The API already names goldens cluster-wide, so this needs no contract change:
+`spawn {image}` becomes pull-on-demand instead of same-node-only. A heavier
+alternative is a Ceph RBD-backed pool (native cross-node CoW clone), which
+trades the per-node single-device model for a distributed-storage dependency.
+A local full *copy* of a golden helps neither problem — blocks must stream over
+the network either way — which is why we kept thin clones (see
+`client/volume/spec.md` on thin independence).
 
-## Volumes → LVM
+## Thin pool exhaustion
 
-A volume is a plain ext4 file today (`client/volume/`). LVM logical volumes
-would give real allocation, resize, and snapshots. See `client/volume/spec.md`.
+Thin provisioning over-commits: the sum of LV virtual sizes can exceed the
+pool's physical size, so a full pool fails all writes and can corrupt guest
+filesystems. Today nothing watches the pool. Fix: enable
+`thin_pool_autoextend_threshold`/`autoextend_percent` (lvm.conf, via
+`provision.sh`) and/or refuse allocation past a data-/metadata-usage watermark
+in `routers/volumes.py`, plus a `dmeventd` alert.
 
 ## VXLAN ARP/ND suppression
 

@@ -114,6 +114,9 @@ def node_env(cluster: dict, node: dict, nodes: list[dict], keys: tuple[str, str]
         "JOIN_TARGET": f"{boot['host']}:{cluster.get('rqlite_raft_port', 4002)}",
         "VM_KEY_B64": keys[0], "VM_PUB_B64": keys[1],
         "VM_TTL_MINUTES": cluster.get("vm_ttl_minutes", 0),
+        "LVM_DEVICE": node.get("lvm_device", cluster.get("lvm_device", "")),
+        "LVM_VG": cluster.get("lvm_vg", "nyc"),
+        "LVM_THINPOOL": cluster.get("lvm_thinpool", "pool"),
     }
 
 
@@ -192,9 +195,13 @@ def cmd_up(cluster: dict, nodes: list[dict], inventory: str) -> int:
 
 def cmd_down(cluster: dict, nodes: list[dict], purge: bool) -> int:
     _delete_all_vms(cluster, nodes)
-    env = {"REMOTE_DIR": cluster.get("remote_dir", "~/equator"),
-           "SSH_USER": cluster.get("ssh_user", "ubuntu"), "PURGE": 1 if purge else 0}
-    _parallel(lambda n: run_script(cluster, n, env, HERE / "teardown.sh"), nodes)
+
+    def env_for(n: dict) -> dict:
+        return {"REMOTE_DIR": cluster.get("remote_dir", "~/equator"),
+                "SSH_USER": cluster.get("ssh_user", "ubuntu"), "PURGE": 1 if purge else 0,
+                "LVM_VG": cluster.get("lvm_vg", "nyc"),
+                "LVM_DEVICE": n.get("lvm_device", cluster.get("lvm_device", ""))}
+    _parallel(lambda n: run_script(cluster, n, env_for(n), HERE / "teardown.sh"), nodes)
     print(f"\nDOWN: {len(nodes)} node(s) torn down{' (purged)' if purge else ''}.")
     return 0
 

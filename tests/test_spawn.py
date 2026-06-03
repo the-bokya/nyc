@@ -48,21 +48,24 @@ def test_spawn_honours_overrides(http):
     assert got["vcpu_count"] == 4 and got["mem_mib"] == 2048
 
 
-def test_spawn_copies_rootfs_and_injects_into_it(http):
+def test_spawn_clones_rootfs_and_injects_into_it(http, node):
+    from nyc.client.volume import lv, names
+    from nyc.config import volume_vg
     vm = _spawn(http)
-    suffix = f"{vm['id']}/rootfs.ext4"
-    # per-VM copy recorded by fake cp
-    assert any(dest.endswith(suffix) for _, dest in STATE["copies"])
-    # debugfs injection ran against the per-VM copy
-    assert any(argv[-1].endswith(suffix) for argv in STATE["debugfs"])
+    vg = volume_vg(node["node_id"])
+    assert lv.exists(vg, names.rootfs(vm["id"]))  # rootfs is a per-VM thin clone of the golden
+    # debugfs injection ran against the per-VM rootfs (the symlink into the vm dir)
+    assert any(argv[-1].endswith(f"{vm['id']}/rootfs.ext4") for argv in STATE["debugfs"])
 
 
-def test_explicit_create_copies_rootfs_and_injects(http):
+def test_explicit_create_clones_rootfs_and_injects(http, node):
+    from nyc.client.volume import lv, names
+    from nyc.config import volume_vg
     vpc = http.post("/vpcs", json={"name": "net", "cidr": "10.5.0.0/24"}).json()
     vm = http.post("/vms", json={"name": "plain", "vpc_id": vpc["id"]}).json()
-    suffix = f"{vm['id']}/rootfs.ext4"
-    assert any(dest.endswith(suffix) for _, dest in STATE["copies"])
-    assert any(argv[-1].endswith(suffix) for argv in STATE["debugfs"])
+    vg = volume_vg(node["node_id"])
+    assert lv.exists(vg, names.rootfs(vm["id"]))
+    assert any(argv[-1].endswith(f"{vm['id']}/rootfs.ext4") for argv in STATE["debugfs"])
 
 
 def test_spawn_reuses_one_default_vpc(http):

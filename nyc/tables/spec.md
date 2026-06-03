@@ -1,13 +1,14 @@
 # tables
 
-Three ORM models, one file each. Each subclasses `dadar.orm.ORM` and declares
+Four ORM models, one file each. Each subclasses `dadar.orm.ORM` and declares
 `name` + `fields` only — no methods. CRUD goes through `Vpcs(client).docs.*`.
 
 | File | Purpose | Scope |
 |---|---|---|
-| `vpcs.py`    | private network CIDR ranges  | global (no `node_id`) |
-| `volumes.py` | per-VM data volumes          | node-bound |
-| `vms.py`     | running microVMs             | node-bound |
+| `vpcs.py`      | private network CIDR ranges     | global (no `node_id`) |
+| `volumes.py`   | per-VM data volumes (thin LVs)  | node-bound |
+| `vms.py`       | running microVMs                | node-bound |
+| `snapshots.py` | read-only thin images: `role` ∈ {snapshot, golden} | node-bound |
 
 `ALL` in `__init__.py` is the list registered with `DadarApp(tables=...)`.
 
@@ -31,3 +32,12 @@ Schema choices:
 - No foreign keys at the SQL level. rqlite supports them but cross-table
   referential integrity isn't worth the deletion-order pain. The routers
   enforce it (`DELETE /vpcs/{id}` rejects when any VM still references it).
+- `volumes.path` holds the LV **device node** `/dev/<vg>/<lv>` (the LV name is
+  `data-<id>`, derived, not stored). The volume is a thin LV; `size_mb` is its
+  thin *virtual* size — physical usage grows on write.
+- `snapshots` covers both plain snapshots and golden images, split by `role`.
+  `parent` is the id it derived from (a volume for a snapshot, a snapshot for a
+  golden; null for the substrate's `gold-default`). `lv_name` is the backing LV.
+  Snapshot/golden `name` uniqueness, like other node-bound names, is enforced (or
+  not) by the router, not SQL. Thin independence means **no cascade**: deleting a
+  volume with snapshots, or a golden with VM clones, is allowed and harmless.

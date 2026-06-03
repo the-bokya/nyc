@@ -13,6 +13,8 @@
 #   JOIN_TARGET     = <bootstrap_host>:<raft_port>   (join nodes only)
 #   VM_KEY_B64 VM_PUB_B64   = shared VM keypair (base64), distributed by deploy
 #   VM_TTL_MINUTES  = auto-delete VMs this many minutes after creation (0 = off)
+#   LVM_DEVICE      = block device nyc LVM-formats + owns (empty => loopback, dev only)
+#   LVM_VG LVM_THINPOOL = VG + thin-pool names (nyc creates them on first start)
 set -euo pipefail
 
 REMOTE_DIR="${REMOTE_DIR/#\~/$HOME}"
@@ -38,6 +40,7 @@ main() {
     enable_ip_forward
     write_sudoers
     init_node
+    write_lvm_config
     install_node_service
     install_caddy_service
     log "provision complete"
@@ -56,7 +59,7 @@ install_packages() {
     [ -f "$STATE_DIR/pre_pkgs" ] || dpkg -l | awk '/^ii/{print $2}' | sort >"$STATE_DIR/pre_pkgs"
     sudo -n apt-get update -y
     sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        git curl e2fsprogs iproute2 iptables ca-certificates
+        git curl e2fsprogs iproute2 iptables ca-certificates lvm2
     command -v uv >/dev/null 2>&1 || curl -fsSL https://astral.sh/uv/install.sh | sh
     install_caddy
     # add the login user to kvm (firecracker runs via sudo, but keep it tidy)
@@ -147,13 +150,30 @@ enable_ip_forward() {
 write_sudoers() {
     log "sudoers"
     local fc="$NYC_DIR/bin/firecracker"
+    # LVM/device ops (incl. mkfs.ext4/debugfs/dd against root-owned LV nodes) sudo.
+    local lvm="/usr/sbin/lvm,/usr/sbin/pvcreate,/usr/sbin/pvremove,/usr/sbin/pvs,/usr/sbin/vgcreate,/usr/sbin/vgremove,/usr/sbin/vgchange,/usr/sbin/vgs,/usr/sbin/lvcreate,/usr/sbin/lvremove,/usr/sbin/lvchange,/usr/sbin/lvextend,/usr/sbin/lvs,/usr/sbin/losetup,/usr/sbin/dmsetup,/usr/bin/dd,/usr/sbin/debugfs,/usr/sbin/resize2fs"
     local tmp; tmp="$(mktemp)"
     cat >"$tmp" <<EOF
-$SSH_USER ALL=(root) NOPASSWD: /usr/sbin/ip,/usr/bin/ip,/usr/sbin/iptables,/usr/bin/iptables,/usr/sbin/sysctl,/usr/sbin/bridge,/usr/bin/bridge,/sbin/mkfs.ext4,/usr/sbin/mkfs.ext4,/usr/bin/mount,/usr/bin/umount,/usr/bin/truncate,/usr/bin/kill,$fc
+$SSH_USER ALL=(root) NOPASSWD: /usr/sbin/ip,/usr/bin/ip,/usr/sbin/iptables,/usr/bin/iptables,/usr/sbin/sysctl,/usr/sbin/bridge,/usr/bin/bridge,/sbin/mkfs.ext4,/usr/sbin/mkfs.ext4,/usr/bin/mount,/usr/bin/umount,/usr/bin/kill,$lvm,$fc
 EOF
     sudo -n visudo -cf "$tmp"
     sudo -n install -m 0440 "$tmp" "$SUDOERS"
     rm -f "$tmp"
+}
+
+
+write_lvm_config() {
+    # Append nyc's LVM keys to the node's config.toml (dadar ignores them; nyc
+    # reads them). Idempotent: strip any prior lvm_* lines before re-writing,
+    # so a duplicate key never breaks the TOML parse on re-provision.
+    log "lvm config"
+    local cfg="$NODE_FOLDER/config.toml"
+    sed -i '/^lvm_/d' "$cfg"
+    {
+        echo "lvm_vg = \"${LVM_VG:-nyc}\""
+        echo "lvm_thinpool = \"${LVM_THINPOOL:-pool}\""
+        [ -n "${LVM_DEVICE:-}" ] && echo "lvm_device = \"$LVM_DEVICE\""
+    } >>"$cfg"
 }
 
 init_node() {

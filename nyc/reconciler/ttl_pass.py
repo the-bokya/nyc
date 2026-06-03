@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from dadar.orm import Client
 
 from nyc.client.lifecycle import vm_down
-from nyc.config import resolve
+from nyc.config import resolve, volume_vg
 from nyc.tables import Vms
 
 
@@ -24,11 +24,12 @@ def reconcile(client: Client, node_id: str) -> dict:
     if ttl <= 0:
         return {"reaped": []}
     paths = resolve()
+    vg = volume_vg(node_id)
     cutoff = datetime.now(timezone.utc).timestamp() - ttl * 60
     rows = Vms(client).docs.get_all(where={"node_id": node_id})
     expired = [r.__dict__["id"] for r in rows if _expired(r.__dict__, cutoff)]
     for vm_id in expired:
-        vm_down.run(paths.vms_dir, vm_id)
+        vm_down.run(paths.vms_dir, vm_id, vg)
         Vms(client).docs.delete(where={"id": vm_id})
     return {"reaped": sorted(expired)}
 

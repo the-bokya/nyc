@@ -1,8 +1,6 @@
 """Reconciler: kills orphans (resource exists, no DB row)."""
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
-from nyc.client.privops_fake import STATE
 from nyc.client.env import setup as env_setup
 from nyc.config import resolve
 from nyc.tables import Vms
@@ -10,25 +8,30 @@ from nyc.tables import Vms
 
 def test_reconcile_kills_orphan_vm_dir(http, node, tmp_path, monkeypatch):
     monkeypatch.chdir(node["tmp_path"])
+    from nyc.client.volume import lv, names, pool
+    from nyc.config import volume_vg
     paths = resolve()
-    assets = {"rootfs": tmp_path / "rootfs", "kernel": tmp_path / "kernel", "ssh_key": tmp_path / "key"}
+    vg = volume_vg(node["node_id"])
+    assets = {"kernel": tmp_path / "kernel", "ssh_key": tmp_path / "key"}
     for p in assets.values():
         p.touch()
-    env_setup.run(paths.vms_dir, "orphan-vm-id-here", assets)
+    env_setup.run(paths.vms_dir, "orphan-vm-id-here", assets, vg, pool.GOLD_DEFAULT)
     report = http.post("/reconcile").json()
     assert "orphan-vm-id-here" in report["vms"]["killed"]
     assert not (paths.vms_dir / "orphan-vm-id-here").exists()
+    assert not lv.exists(vg, names.rootfs("orphan-vm-id-here"))  # rootfs clone reaped too
 
 
-def test_reconcile_kills_orphan_volume_file(http, node, monkeypatch):
+def test_reconcile_kills_orphan_volume_lv(http, node, monkeypatch):
     monkeypatch.chdir(node["tmp_path"])
-    paths = resolve()
-    paths.volumes_dir.mkdir(parents=True, exist_ok=True)
-    orphan_path = str(paths.volumes_dir / "orphan-vol.ext4")
-    STATE["files"][orphan_path] = 1024
+    from nyc.client.volume import lv, names
+    from nyc.config import lvm, volume_vg
+    vg = volume_vg(node["node_id"])
+    orphan = names.data("orphan-vol-id")  # an LV with no DB row
+    lv.create_thin(vg, lvm().thinpool, orphan, 64)
     report = http.post("/reconcile").json()
-    assert "orphan-vol.ext4" in report["volumes"]["deleted"]
-    assert orphan_path not in STATE["files"]
+    assert orphan in report["volumes"]["deleted"]
+    assert not lv.exists(vg, orphan)
 
 
 def test_reconcile_preserves_known_vm(http, monkeypatch, node):

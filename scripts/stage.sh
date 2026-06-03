@@ -41,10 +41,12 @@ if [[ "$BACKEND" == "real" ]]; then
     [[ -x bin/firecracker ]] || ./scripts/install_firecracker.sh
     [[ -f assets/vmlinux && -f assets/rootfs.ext4 && -f assets/id_ed25519 ]] || ./scripts/fetch_artifacts.sh
     if ! sudo -n /usr/bin/ip -V >/dev/null 2>&1; then
-        echo "real mode needs passwordless sudo for ip/bridge/iptables/sysctl/mount/umount/kill/firecracker."
-        echo "(truncate, mkfs.ext4, cp and debugfs run unprivileged — they only touch user-owned files.)"
+        echo "real mode needs passwordless sudo for ip/bridge/iptables/sysctl/mount/umount/kill/firecracker,"
+        echo "the LVM toolchain (lvm/pv*/vg*/lv*/losetup/dmsetup) for the loopback-backed volume group,"
+        echo "and mkfs.ext4/debugfs/dd/resize2fs against root-owned LV device nodes."
+        echo "(Only truncate — the loopback backing file — stays unprivileged.)"
         echo "install this in /etc/sudoers.d/nyc (via 'sudo visudo -f /etc/sudoers.d/nyc'):"
-        echo "  $USER ALL=(root) NOPASSWD: /usr/bin/ip, /usr/sbin/bridge, /usr/sbin/iptables, /usr/sbin/sysctl, /usr/bin/mount, /usr/bin/umount, /usr/bin/kill, $PWD/bin/firecracker"
+        echo "  $USER ALL=(root) NOPASSWD: /usr/bin/ip, /usr/sbin/bridge, /usr/sbin/iptables, /usr/sbin/sysctl, /usr/bin/mount, /usr/bin/umount, /usr/bin/kill, /usr/sbin/lvm, /usr/sbin/pvcreate, /usr/sbin/pvremove, /usr/sbin/pvs, /usr/sbin/vgcreate, /usr/sbin/vgremove, /usr/sbin/vgchange, /usr/sbin/vgs, /usr/sbin/lvcreate, /usr/sbin/lvremove, /usr/sbin/lvchange, /usr/sbin/lvextend, /usr/sbin/lvs, /usr/sbin/losetup, /usr/sbin/dmsetup, /usr/bin/dd, /usr/sbin/mkfs.ext4, /usr/sbin/debugfs, /usr/sbin/resize2fs, $PWD/bin/firecracker"
         exit 2
     fi
 fi
@@ -114,7 +116,7 @@ cleanup() {
     for pid in "${PIDS[@]}"; do
         kill "$pid" 2>/dev/null || true
     done
-    if [[ "$BACKEND" == "real" ]]; then _purge_nyc_kernel_state; fi
+    if [[ "$BACKEND" == "real" ]]; then _purge_nyc_kernel_state; _purge_nyc_lvm; fi
     exit "$rc"
 }
 
@@ -124,6 +126,23 @@ _purge_nyc_kernel_state() {
     done
     for ns in $(sudo -n /usr/bin/ip netns list 2>/dev/null | awk '/^vm-[0-9a-f]{8}/ {print $1}'); do
         sudo -n /usr/bin/ip netns del "$ns" 2>/dev/null || true
+    done
+}
+
+# Each staged node ran in loopback mode: a sparse pv.img in its folder, attached
+# via losetup, with its own per-node VG. Remove only the VGs/loops backed by
+# THIS run's files, so nothing else on the dev box is touched.
+_purge_nyc_lvm() {
+    for img in stage/node*/.lvm/pv.img; do
+        [[ -f "$img" ]] || continue
+        local loop; loop="$(sudo -n /usr/sbin/losetup -j "$img" 2>/dev/null | cut -d: -f1)"
+        [[ -n "$loop" ]] || continue
+        for vg in $(sudo -n /usr/sbin/pvs --noheadings -o vg_name "$loop" 2>/dev/null); do
+            sudo -n /usr/sbin/vgchange -an "$vg" 2>/dev/null || true
+            sudo -n /usr/sbin/vgremove -f -y "$vg" 2>/dev/null || true
+        done
+        sudo -n /usr/sbin/pvremove -ff -y "$loop" 2>/dev/null || true
+        sudo -n /usr/sbin/losetup -d "$loop" 2>/dev/null || true
     done
 }
 

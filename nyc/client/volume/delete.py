@@ -1,12 +1,6 @@
-from pathlib import Path
+"""Remove a data volume's thin LV (idempotent)."""
+from nyc.client.volume import lv
 
-from nyc.client import privops
 
-
-def run(path: Path) -> None:
-    if not path.exists() and privops.backend() == "fake":
-        from nyc.client.privops_fake import STATE
-        STATE["files"].pop(str(path), None)
-        return
-    if path.exists():
-        path.unlink()
+def run(vg: str, name: str) -> None:
+    lv.remove(vg, name)

@@ -7,7 +7,7 @@ Artifact fetch, single-host staging, and bare-metal preflight + **deploy**
 |---|---|
 | `install_firecracker.sh` | Idempotently download the pinned firecracker binary into `bin/`. |
 | `fetch_artifacts.sh` | Idempotently fetch the kernel + rootfs into `assets/` and generate an ssh keypair. (Per-VM SSH/DNS/fstab are injected at boot by `vm.inject`; the shared key + resolv.conf are baked into the base rootfs by `provision.sh`.) |
-| `stage.sh [N] [--real] [--keep] [--no-tests]` | Single-host emulation: boot N dadar nodes in `./stage/`, run the e2e suite. `host` stays `127.0.0.1`, so the cross-node overlay isn't exercised here. |
+| `stage.sh [N] [--real] [--keep] [--no-tests]` | Single-host emulation: boot N dadar nodes in `./stage/`, run the e2e suite. `host` stays `127.0.0.1`, so the cross-node overlay isn't exercised here. `--real` builds each node a loopback-backed VG (sparse `pv.img` in its folder); cleanup detaches the loops + removes those VGs. |
 | `preflight.py <cluster.toml>` | **Read-only** bare-metal readiness probe (below). |
 | `deploy.py {up,down,status,ssh,overlay-check} <cluster.toml> [--purge]` | Bare-metal orchestrator (below). |
 | `provision.sh` / `teardown.sh` | Idempotent per-node setup / reverse, run by `deploy.py` over `ssh -A`; env-driven. Regenerated from `deploy.prompt.md`. |
@@ -16,8 +16,9 @@ Artifact fetch, single-host staging, and bare-metal preflight + **deploy**
 
 **Locked choices:** delivery = `git clone` (recursive) at the inventory `ref`;
 supervision = systemd; inventory = TOML; git auth = SSH agent forwarding; node
-login = passwordless-sudo user; per-VM key = rootfs copy + `debugfs`. One node
-folder per machine at `<remote_dir>/nyc/node`.
+login = passwordless-sudo user; per-VM key = rootfs clone + `debugfs`; storage =
+LVM thin pool on one block device per machine (`lvm_device`). One node folder
+per machine at `<remote_dir>/nyc/node`.
 
 ## preflight.py
 
@@ -50,16 +51,22 @@ the ssh line). API calls (health, VPC, smoke) run **on a node via ssh → its ow
 ### provision.sh / teardown.sh
 
 Per-node bash, env-driven, idempotent (check-then-act), `sudo -n`.
-**`provision.sh`** sets a node up end to end: apt + `uv` + Caddy → fetch/checkout
-the repo at `REF` → `uv sync` → install firecracker + rqlited → fetch artifacts,
-distribute the shared key, bake key + resolv.conf into the base rootfs →
-`ip_forward` → sudoers → `dadar init` → start `nyc-node.service` +
-`nyc-caddy.service` (per-node Caddyfile, automatic HTTPS). **`teardown.sh`**
-reverses it by the anchored regexes in `teardown.sh` (name patterns:
-`../NETWORKING.md` §7): rm units → `ip netns/link del` matches → drop the `NYC-*`
-iptables chains → restore `ip_forward` → rm node folder + sudoers. `PURGE=1` also
-removes added packages (diffed against a `dpkg` snapshot from `up`) + the
-checkout, so `up` after `down` rebuilds cleanly. **Reproduction-grade ordered
+**`provision.sh`** sets a node up end to end: apt (incl. `lvm2`) + `uv` + Caddy →
+fetch/checkout the repo at `REF` → `uv sync` → install firecracker + rqlited →
+fetch artifacts, distribute the shared key, bake key + resolv.conf into the base
+rootfs → `ip_forward` → sudoers (now also the LVM/device toolchain) → `dadar
+init` → write nyc's `lvm_*` keys into the node's `config.toml` (`LVM_DEVICE` is
+the one block device nyc owns; `LVM_VG`/`LVM_THINPOOL` name the VG/pool nyc
+creates on first start) → start `nyc-node.service` + `nyc-caddy.service`
+(per-node Caddyfile, automatic HTTPS). The VG/thin-pool/default-golden are built
+lazily at node startup by `client/volume/pool.ensure` (self-healing on reboot),
+not by `provision.sh`. **`teardown.sh`** reverses it by the anchored regexes in
+`teardown.sh` (name patterns: `../NETWORKING.md` §7): rm units → `ip netns/link
+del` matches → drop the `NYC-*` iptables chains → restore `ip_forward` → rm node
+folder + sudoers. `PURGE=1` also removes added packages (diffed against a `dpkg`
+snapshot from `up`) + the checkout **+ the LVM VG/PV on `LVM_DEVICE`** (a plain
+`down` leaves the VG, so VM data survives a re-`up`), so `up` after `down
+--purge` rebuilds cleanly. **Reproduction-grade ordered
 steps + the literal sudoers / systemd / Caddyfile templates:
 [`deploy.prompt.md`](deploy.prompt.md).**
 

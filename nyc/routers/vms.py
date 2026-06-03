@@ -25,10 +25,12 @@ from nyc.client.network.allocate import pick_ip
 from nyc.client.vm import status as vm_status
 from nyc.client.env.paths import for_vm
 from nyc.client.volume import create as vol_create
-from nyc.config import resolve
+from nyc.client.volume import names
+from nyc.client.volume.pool import GOLD_DEFAULT
+from nyc.config import lvm, resolve, volume_vg
 from nyc.defaults import ensure_default_vpc
 from nyc.routers._proxy import forward
-from nyc.tables import Vms, Vpcs, Volumes
+from nyc.tables import Vms, Vpcs, Volumes, Snapshots
 
 router = APIRouter(prefix="/vms")
 
@@ -46,6 +48,7 @@ class SpawnIn(BaseModel):
     size_mb: int = 1024
     vcpu_count: int = 1
     mem_mib: int = 512
+    image: str | None = None  # golden image id to clone the rootfs from (default golden if omitted)
 
 
 @router.get("")
@@ -71,7 +74,7 @@ def create_vm(body: VmIn, client: Client = Depends(get_client),
 def spawn_vm(body: SpawnIn, client: Client = Depends(get_client),
              node_id: str = Depends(get_node_id),
              pin: str | None = Header(default=None, alias="X-Nyc-Pin")) -> dict:
-    target = pin or _random_node(client)
+    target = pin or _target_node(body, client)
     if target != node_id:
         return forward(client, target, "POST", "/vms/spawn",
                        json=body.model_dump(), headers={"X-Nyc-Pin": target})
@@ -100,7 +103,7 @@ def delete_vm(vm_id: str, client: Client = Depends(get_client),
     if owner != node_id:
         forward(client, owner, "DELETE", f"/vms/{vm_id}")
         return
-    _delete_local(vm_id, client)
+    _delete_local(vm_id, node_id, client)
 
 
 @router.post("/{vm_id}/stop")
@@ -165,21 +168,22 @@ def _create_local(body: VmIn, node_id: str, client: Client) -> dict:
 
 
 def _bring_up(row: dict, cidr: str, vol_path: Path | None, client: Client,
-              ssh_pubkey: str | None = None) -> None:
-    vm_up.run(_spec(row, cidr, vol_path, client, ssh_pubkey))
+              ssh_pubkey: str | None = None, rootfs_origin: str = GOLD_DEFAULT) -> None:
+    vm_up.run(_spec(row, cidr, vol_path, client, ssh_pubkey, rootfs_origin))
     Vms(client).docs.update(where={"id": row["id"]}, set={"status": "running"})
     row["status"] = "running"
 
 
 def _spec(row: dict, cidr: str, vol_path: Path | None, client: Client,
-          ssh_pubkey: str | None = None) -> "vm_up.VmSpec":
+          ssh_pubkey: str | None = None, rootfs_origin: str = GOLD_DEFAULT) -> "vm_up.VmSpec":
     paths = resolve()
     node_id = row["node_id"]
     return vm_up.VmSpec(
         vm_id=row["id"], vm_name=row["name"], node_id=node_id, vpc_id=row["vpc_id"],
         ip=row["ip"], cidr=cidr, data_volume_path=vol_path,
-        assets={"rootfs": paths.rootfs, "kernel": paths.kernel, "ssh_key": paths.ssh_key},
+        assets={"kernel": paths.kernel, "ssh_key": paths.ssh_key},
         vms_dir=paths.vms_dir, firecracker_bin=paths.firecracker_bin,
+        vg=volume_vg(node_id), rootfs_origin=rootfs_origin,
         node_host=peers.node_host(client, node_id),
         peer_hosts=peers.peer_hosts(client, node_id),
         dns=os.environ.get("NYC_VM_DNS", "1.1.1.1"),
@@ -190,12 +194,39 @@ def _spec(row: dict, cidr: str, vol_path: Path | None, client: Client,
 
 def _spawn_local(body: SpawnIn, node_id: str, client: Client) -> dict:
     vpc = ensure_default_vpc(client)
+    rootfs_origin = _resolve_image(body.image, node_id, client)
     vol = _auto_volume(body.vm_name, body.size_mb, node_id, client)
     ip = pick_ip(vpc["cidr"], _used_ips(vpc["id"], client))
     row = _spawn_row(body, node_id, vpc["id"], ip, vol["id"])
     Vms(client).docs.insert(row)
-    _bring_up(row, vpc["cidr"], Path(vol["path"]), client, ssh_pubkey=body.ssh_key)
+    _bring_up(row, vpc["cidr"], Path(vol["path"]), client,
+              ssh_pubkey=body.ssh_key, rootfs_origin=rootfs_origin)
     return row
+
+
+def _target_node(body: SpawnIn, client: Client) -> str:
+    """An image pins placement to its owner node (clone is node-local today)."""
+    if body.image:
+        return _image_or_400(body.image, client)["node_id"]
+    return _random_node(client)
+
+
+def _resolve_image(image_id: str | None, node_id: str, client: Client) -> str:
+    """Golden LV to clone the rootfs from. Verify it lives on this node — a
+    cross-node clone is not supported yet (see FUTURE.md: image registry)."""
+    if not image_id:
+        return GOLD_DEFAULT
+    img = _image_or_400(image_id, client)
+    if img["node_id"] != node_id:
+        raise HTTPException(409, "image is on another node (cross-node clone not yet supported)")
+    return img["lv_name"]
+
+
+def _image_or_400(image_id: str, client: Client) -> dict:
+    img = Snapshots(client).docs.get(where={"id": image_id, "role": "golden"})
+    if img is None:
+        raise HTTPException(400, "unknown image")
+    return img.__dict__
 
 
 def _random_node(client: Client) -> str:
@@ -207,10 +238,10 @@ def _random_node(client: Client) -> str:
 
 def _auto_volume(vm_name: str, size_mb: int, node_id: str, client: Client) -> dict:
     vol_id = str(uuid.uuid4())
-    vol_path = resolve().volumes_dir / f"{vol_id}.ext4"
-    vol_create.run(vol_path, size_mb)
+    vg = volume_vg(node_id)
+    dev = vol_create.run(vg, lvm().thinpool, names.data(vol_id), size_mb)
     row = {"id": vol_id, "node_id": node_id, "name": f"{vm_name}-data", "size_mb": size_mb,
-           "path": str(vol_path), "status": "ready",
+           "path": dev, "status": "ready",
            "created_at": datetime.now(timezone.utc).isoformat()}
     Volumes(client).docs.insert(row)
     return row
@@ -223,9 +254,9 @@ def _spawn_row(body: SpawnIn, node_id: str, vpc_id: str, ip: str, vol_id: str) -
             "status": "pending", "created_at": datetime.now(timezone.utc).isoformat()}
 
 
-def _delete_local(vm_id: str, client: Client) -> None:
+def _delete_local(vm_id: str, node_id: str, client: Client) -> None:
     paths = resolve()
-    vm_down.run(paths.vms_dir, vm_id)
+    vm_down.run(paths.vms_dir, vm_id, volume_vg(node_id))
     Vms(client).docs.delete(where={"id": vm_id})
 
 

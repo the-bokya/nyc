@@ -20,11 +20,17 @@ Three resources, all replicated through raft via dadar's ORM:
 
 | Resource | Scope | Key fields |
 |---|---|---|
-| `vpcs`    | cluster-wide | `id`, `name` (UNIQUE), `cidr`, `created_at` |
-| `volumes` | node-bound   | `id`, `node_id`, `name`, `size_mb`, `path`, `status`, `created_at` |
-| `vms`     | node-bound   | `id`, `node_id`, `name`, `vpc_id`, `data_volume_id\|null`, `ip`, `ssh_pubkey_path`, `vcpu_count`, `mem_mib`, `status`, `created_at` |
+| `vpcs`      | cluster-wide | `id`, `name` (UNIQUE), `cidr`, `created_at` |
+| `volumes`   | node-bound   | `id`, `node_id`, `name`, `size_mb`, `path` (LV device node), `status`, `created_at` |
+| `vms`       | node-bound   | `id`, `node_id`, `name`, `vpc_id`, `data_volume_id\|null`, `ip`, `ssh_pubkey_path`, `vcpu_count`, `mem_mib`, `status`, `created_at` |
+| `snapshots` | node-bound   | `id`, `node_id`, `name`, `role` (`snapshot`\|`golden`), `parent\|null`, `lv_name`, `size_mb`, `created_at` |
 
 - `id`s are stringified UUIDv4; `node_id` is a UUID from dadar's `Nodes` table.
+- All VM storage is **LVM thin volumes** in a per-node volume group's thin pool:
+  data volumes, snapshots, golden images, and per-VM rootfs overlays are all
+  thin LVs. A golden is a read-only snapshot; a VM's rootfs is a writable thin
+  *clone* of a golden (no full copy). Thin snapshots are independent — deleting
+  one never breaks clones of it. Substrate + API: `client/volume/spec.md`.
 - `vms.ip` is allocated from `vpcs.cidr`, unique within the VPC (enforced in
   Python today — see [`FUTURE.md`](FUTURE.md) on the allocation race).
 - `vms.status` ∈ `{pending, running, stopped, failed}`;
@@ -36,9 +42,11 @@ Three resources, all replicated through raft via dadar's ORM:
 | Method | Path | Body | Notes |
 |---|---|---|---|
 | GET/POST/GET/DELETE | /vpcs[/{id}]    | POST `{name, cidr}`                       | global; DELETE 409 if any VM attached |
-| GET/POST/GET/DELETE | /volumes[/{id}] | POST `{name, size_mb, node_id?}`          | node-bound; DELETE 409 if attached |
+| GET/POST/GET/PATCH/DELETE | /volumes[/{id}] | POST `{name, size_mb \| from_snapshot, node_id?}`; PATCH `{size_mb}` | node-bound thin LV; PATCH resizes; DELETE 409 if attached |
+| GET/POST/GET/DELETE | /snapshots[/{id}] | POST `{name, volume_id}`                | node-bound; read-only thin freeze of a volume |
+| GET/POST/GET/DELETE | /images[/{id}]    | POST `{name, from_snapshot}`            | node-bound; golden image (bootable rootfs source) |
 | GET/POST/GET/DELETE | /vms[/{id}]     | POST `{name, vpc_id, data_volume_id?, node_id?}` | node-bound; full bring-up/teardown |
-| POST | /vms/spawn            | `{vm_name, ssh_key, size_mb?, vcpu_count?, mem_mib?}` | turnkey: default VPC, random node, auto volume, key injected |
+| POST | /vms/spawn            | `{vm_name, ssh_key, size_mb?, vcpu_count?, mem_mib?, image?}` | turnkey: default VPC, auto volume, key injected; `image` clones a golden (pins to its node), else random node + `gold-default` |
 | POST | /vms/{id}/stop\|start\|reboot | —                                | proxied to owner; flips `vms.status` |
 | POST | /reconcile           | —                                                | force one reconciler pass on the receiving node |
 | GET  | /health, /nodes      | (inherited from dadar core)                      | |
@@ -67,18 +75,21 @@ node user keeps ownership), `fake` mutates an in-memory `STATE`. `NYC_BACKEND`
 
 A per-node asyncio task (every `NYC_RECONCILE_INTERVAL`s, default 5) plus a
 synchronous `POST /reconcile`. Each pass reads this node's DB rows, enumerates
-local resources (VM dirs, volume files), and **tears down orphans** (resource
-present, no row). It also reaps TTL-expired VMs and re-syncs each local VPC's
-VXLAN flood list. Recreating rows whose backing resource vanished, and
-restarting dead-but-`running` VMs, are **not yet done** — see `reconciler/spec.md`
-and [`FUTURE.md`](FUTURE.md).
+local resources (VM dirs and the node VG's thin LVs — data/snapshot/golden/
+rootfs), and **tears down orphans** (resource present, no row). It also reaps
+TTL-expired VMs and re-syncs each local VPC's VXLAN flood list. Recreating rows
+whose backing resource vanished, and restarting dead-but-`running` VMs, are
+**not yet done** — see `reconciler/spec.md` and [`FUTURE.md`](FUTURE.md).
 
 ## Directory-level isolation
 
-Every node folder owns its `vms/`, `volumes/`, and netns/tap/bridge names.
-Names derive from the VM/volume/VPC UUID (globally unique), and bridge/VXLAN
-names carry the node short-id (`br-<4>-<4>`), so two nodes on one host never
-collide. (Truncation-collision risk at scale: [`FUTURE.md`](FUTURE.md).)
+Every node folder owns its `vms/` dir and netns/tap/bridge names; its storage
+is a per-node LVM volume group (the configured device in prod, or a per-node
+loopback file in single-host staging — VG name `<vg>-<node[:8]>` so staged
+nodes never share a VG). Resource names derive from the VM/volume/VPC UUID
+(globally unique), and bridge/VXLAN names carry the node short-id (`br-<4>-<4>`),
+so two nodes on one host never collide. (Truncation-collision risk at scale:
+[`FUTURE.md`](FUTURE.md).)
 
 ## Staging
 

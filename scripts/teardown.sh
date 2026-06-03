@@ -4,7 +4,8 @@
 # packages we installed and the checkout. Every step tolerates already-gone
 # state, so a partial earlier run never blocks teardown.
 #
-# Required env: REMOTE_DIR SSH_USER   (PURGE=1 to also remove packages + checkout)
+# Required env: REMOTE_DIR SSH_USER   (PURGE=1 to also remove packages + checkout
+#   + the LVM vg/pv on LVM_DEVICE; LVM_VG/LVM_DEVICE name what to wipe)
 set -uo pipefail
 
 REMOTE_DIR="${REMOTE_DIR/#\~/$HOME}"
@@ -18,6 +19,7 @@ log() { printf '\n[teardown] %s\n' "$*"; }
 
 main() {
     stop_services
+    purge_lvm_if_requested        # --purge only: VMs' data lives here
     purge_kernel_links
     purge_iptables
     restore_ip_forward            # reads pre_ip_forward
@@ -35,6 +37,17 @@ stop_services() {
         sudo -n rm -f "/etc/systemd/system/$unit"
     done
     sudo -n systemctl daemon-reload
+}
+
+purge_lvm_if_requested() {
+    # nyc owns the device, so the VG holds VM data — only wipe it on --purge,
+    # so a plain `down` (then `up`) preserves volumes. Idempotent / tolerant.
+    [ "${PURGE:-0}" = 1 ] && [ -n "${LVM_VG:-}" ] || return 0
+    log "--purge: remove LVM vg ${LVM_VG}"
+    sudo -n vgchange -an "$LVM_VG" 2>/dev/null
+    sudo -n vgremove -f -y "$LVM_VG" 2>/dev/null
+    [ -n "${LVM_DEVICE:-}" ] && sudo -n pvremove -ff -y "$LVM_DEVICE" 2>/dev/null
+    return 0
 }
 
 purge_kernel_links() {

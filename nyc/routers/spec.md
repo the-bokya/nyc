@@ -6,7 +6,8 @@ belong in `nyc.client`. Routers compose: ORM read → client call → ORM write.
 | File | Endpoint | Notes |
 |---|---|---|
 | `vpcs.py`      | `/vpcs`          | Global. No proxy. |
-| `volumes.py`   | `/volumes`       | Node-bound. POST/DELETE proxy via `_proxy.forward`. |
+| `volumes.py`   | `/volumes`       | Node-bound (thin LVs). POST/PATCH/DELETE proxy via `_proxy.forward`. POST takes `size_mb` or `from_snapshot` (clone); PATCH `{size_mb}` resizes (`lvextend`+`resize2fs`). |
+| `snapshots.py` | `/snapshots`, `/images` | Node-bound. `/snapshots` = read-only freezes of a volume; `/images` = golden images (a snapshot promoted via `from_snapshot`). Writes proxy to the resource's owner; reads serve from local raft. |
 | `vms.py`       | `/vms`           | Node-bound. `POST /vms` runs the full lifecycle composer. `POST /vms/spawn` is the turnkey path (see below). |
 | `reconcile.py` | `/reconcile`     | POST triggers one immediate reconciler pass on the receiving node. |
 | `_proxy.py`    | (helper)         | Looks up `nodes.host` + `nodes.http_port` and forwards via httpx over the private network. |
@@ -33,19 +34,24 @@ per owner, not a broadcast). Without this, a non-owner node would always report
 ## `POST /vms/spawn`
 
 Turnkey VM creation. Body is `{vm_name, ssh_key, size_mb=1024, vcpu_count=1,
-mem_mib=512}` — deliberately **no `vpc_id`, no `node_id`**.
+mem_mib=512, image=None}` — deliberately **no `vpc_id`, no `node_id`**.
 
 - **Network**: lands in the `default` /16 VPC (`nyc.defaults.ensure_default_vpc`,
   get-or-create).
-- **Placement**: the receiving node picks a node at random from the registry
-  and proxies the request there, pinning the choice with the `X-Nyc-Pin`
-  header so the chosen node spawns locally instead of re-rolling. (`pin`
-  never appears in the request body — it is an internal hop, not API surface.)
-- **Volume**: a per-VM data volume is auto-created on the target node and
-  tracked in `volumes` (named `<vm_name>-data`); its id is stored on the VM row.
+- **Placement**: with no `image`, the receiving node picks a node at random and
+  proxies there, pinning the choice with the `X-Nyc-Pin` header so the chosen
+  node spawns locally instead of re-rolling. With an `image` (a golden id),
+  placement is **pinned to that image's owner node** (clone is node-local
+  today), and the owner re-verifies `image.node_id == node_id`, returning 409
+  otherwise — see [`../../FUTURE.md`](../../FUTURE.md) on cross-node images.
+  (`pin` never appears in the request body — it is an internal hop.)
+- **Rootfs**: a thin clone of the golden `image` (or `gold-default` when
+  omitted) becomes the per-VM writable rootfs.
+- **Volume**: a per-VM data volume (thin LV) is auto-created on the target node
+  and tracked in `volumes` (named `<vm_name>-data`); its id is on the VM row.
 - **Key + mount**: `ssh_key`, `/etc/resolv.conf`, and the `/home` data-volume
   fstab entry are written via offline debugfs edits (`vm.inject.run`) on the
-  per-VM rootfs copy. The shared base image is never modified.
+  per-VM rootfs clone. The golden image is read-only and never modified.
 
 `DELETE /vms/{id}` currently removes the VM only — it does **not** cascade to
 the auto-created volume, which leaks (open question — see

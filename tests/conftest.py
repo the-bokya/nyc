@@ -22,6 +22,8 @@ from dadar.orm import Client  # noqa: E402
 
 from nyc.app import app as nyc_app  # noqa: E402
 from nyc.client import privops  # noqa: E402
+from nyc.client.volume import pool  # noqa: E402
+from nyc.config import lvm, resolve  # noqa: E402
 
 
 def _free_port() -> int:
@@ -64,6 +66,7 @@ def node(tmp_path, monkeypatch):
         client = Client(cfg.rqlite_url)
         bootstrap.ensure_tables(client, nyc_app.tables)
         bootstrap.register_self(client, "nyc-test-1", cfg)
+        pool.ensure("nyc-test-1", lvm(), resolve().rootfs)  # lifespan is bypassed here
         fastapi_app = build(client, "nyc-test-1", user_routers=nyc_app.routers)
         yield {"client": TestClient(fastapi_app), "orm": client, "node_id": "nyc-test-1", "tmp_path": tmp_path}
         client.close()

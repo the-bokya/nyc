@@ -8,10 +8,11 @@ the diff each interval and brings reality to match.
 
 | File | Role |
 |---|---|
-| `pass_once.py`   | `run(client, node_id) → {ttl, vms, volumes, overlay}` — one shot, returns a report. |
+| `pass_once.py`   | `run(client, node_id) → {ttl, vms, volumes, snapshots, overlay}` — one shot, returns a report. |
 | `ttl_pass.py`    | Delete local VMs older than `NYC_VM_TTL_MINUTES` (0/unset = off). |
-| `vms_pass.py`    | Reconcile `vms` table against `<vms_dir>/*` |
-| `volumes_pass.py`| Reconcile `volumes` table against `<volumes_dir>/*.ext4` |
+| `vms_pass.py`    | Reconcile `vms` table against `<vms_dir>/*`; also prune `rootfs-*` LVs with no row. |
+| `volumes_pass.py`| Reconcile `volumes` table against the `data-*` thin LVs in the node's VG. |
+| `snapshots_pass.py`| Reconcile `snapshots` table against the `snap-*`/`gold-*` LVs (keeps reserved `gold-default`). |
 | `overlay_pass.py`| Re-sync each local VPC's VXLAN head-end FDB to the current peer set. |
 | `loop.py`        | asyncio background task, started by `nyc.app` on FastAPI lifespan startup |
 
@@ -20,9 +21,11 @@ the diff each interval and brings reality to match.
 For each resource type:
 
 1. Read all DB rows where `node_id == this node`.
-2. Enumerate local resources (vm directories, volume files).
+2. Enumerate local resources (vm directories; the node VG's `data-`/`snap-`/
+   `gold-`/`rootfs-` thin LVs, via `lv.list_lvs`).
 3. Compute `(orphans = local - expected)` and `(missing = expected - local)`.
-4. Tear down orphans. Recreating missing resources and restarting
+4. Tear down orphans (`lvremove` for LVs, `vm_down` for VM dirs — which also
+   removes the rootfs clone LV). Recreating missing resources and restarting
    dead-but-`running` VMs are **not yet done** — the loop is one-directional
    (prunes excess, never enforces intent). See [`../../FUTURE.md`](../../FUTURE.md).
 

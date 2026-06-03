@@ -7,12 +7,12 @@ from nyc.client.network import namespace, veth
 from nyc.client.vm import kill
 
 
-def run(vms_dir: Path, vm_id: str) -> None:
+def run(vms_dir: Path, vm_id: str, vg: str) -> None:
     paths = for_vm(vms_dir, vm_id)
     if paths.root.exists():
         kill.run(paths)
     _network_down(vm_id)
-    env_teardown.run(paths.root)
+    env_teardown.run(paths.root, vg)  # rmtree the dir + remove the rootfs clone LV
 
 
 def _network_down(vm_id: str) -> None:

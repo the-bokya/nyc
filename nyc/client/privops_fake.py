@@ -41,8 +41,13 @@ def reset_state() -> None:
         "fc_socks":  {},          # api_sock_path -> {"vm_dir": str, "running": bool}
         "sysctl":    {},          # key -> value
         "fdb":       {},          # dev -> {(mac, dst)}
-        "copies":    [],          # [(source, dest)] from `cp` (per-VM rootfs clone)
         "debugfs":   [],          # [argv] from `debugfs` (offline rootfs edits)
+        "lvm": {                  # in-memory LVM: mirrors lvcreate/lvs/etc. argv shapes
+            "loops": {},          # backing_file -> /dev/loopN
+            "pvs":   set(),       # {device}
+            "vgs":   set(),       # {vg_name}
+            "lvs":   {},          # (vg, lv_name) -> {size, pool, origin, attr}
+        },
         "iptables":  {t: {"chains": set(c), "builtin": set(c), "rules": {}}
                       for t, c in _IPT_BUILTIN.items()},
     })
@@ -203,12 +208,6 @@ def _kill(argv, _input):
     return ""
 
 
-def _cp(argv, _input):
-    # ["cp", "--reflink=auto", source, dest] — record the per-VM rootfs clone.
-    STATE["copies"].append((argv[-2], argv[-1]))
-    return ""
-
-
 def _debugfs(argv, _input):
     # ["debugfs", "-w", "-f", cmdfile, rootfs] — record the offline rootfs edit.
     STATE["debugfs"].append(list(argv))
@@ -293,6 +292,115 @@ def _dir_of(path: str):
     return Path(path).parent
 
 
+# --- LVM ------------------------------------------------------------------
+# Enough of losetup/pvcreate/vgcreate/lvcreate/lvs/... that the volume client's
+# argv shapes round-trip. `lvs`/`vgs`/`pvs` answer with the same JSON envelope
+# real LVM emits (`{"report": [{<kind>: [...] }]}`), so the parser is shared.
+
+def _report_json(kind: str, rows: list) -> str:
+    import json
+    return json.dumps({"report": [{kind: rows}]})
+
+
+def _parse_m(s: str) -> int:
+    return int(float(s.lstrip("+").rstrip("mMgGkK")))
+
+
+def _losetup(argv, _input):
+    loops = STATE["lvm"]["loops"]
+    if "-j" in argv:
+        f = argv[argv.index("-j") + 1]
+        return f"{loops[f]}: []: ({f})\n" if f in loops else ""
+    if "-d" in argv:
+        dev = argv[argv.index("-d") + 1]
+        for f in [f for f, d in loops.items() if d == dev]:
+            loops.pop(f)
+        return ""
+    f = argv[-1]
+    loops.setdefault(f, f"/dev/loop{len(loops)}")
+    return f"{loops[f]}\n"
+
+
+def _pvcreate(argv, _input):
+    STATE["lvm"]["pvs"].add(argv[-1]); return ""
+
+
+def _pvremove(argv, _input):
+    STATE["lvm"]["pvs"].discard(argv[-1]); return ""
+
+
+def _vgcreate(argv, _input):
+    STATE["lvm"]["vgs"].add(argv[1]); return ""
+
+
+def _vgremove(argv, _input):
+    vg = argv[-1]
+    STATE["lvm"]["vgs"].discard(vg)
+    for k in [k for k in STATE["lvm"]["lvs"] if k[0] == vg]:
+        STATE["lvm"]["lvs"].pop(k)
+    return ""
+
+
+def _vgchange(argv, _input):
+    return ""
+
+
+def _pvs(argv, _input):
+    dev = argv[-1]
+    rows = [{"pv_name": dev}] if dev in STATE["lvm"]["pvs"] else []
+    return _report_json("pv", rows)
+
+
+def _vgs(argv, _input):
+    vg = argv[-1]
+    rows = [{"vg_name": vg}] if vg in STATE["lvm"]["vgs"] else []
+    return _report_json("vg", rows)
+
+
+def _add_lv(vg, name, pool, origin, attr, size=0):
+    STATE["lvm"]["lvs"][(vg, name)] = {"size": size, "pool": pool, "origin": origin, "attr": attr}
+
+
+def _lvcreate(argv, _input):
+    name = argv[argv.index("-n") + 1]
+    if "thin-pool" in argv:
+        _add_lv(argv[-1], name, None, None, "twi-a-tz--")
+    elif "-s" in argv:
+        vg, origin = next(a for a in argv if "/" in a).split("/")
+        src = STATE["lvm"]["lvs"].get((vg, origin), {})
+        attr = "Vri---tz-k" if "--permission" in argv else "Vwi-a-tz--"
+        _add_lv(vg, name, src.get("pool"), origin, attr, src.get("size", 0))
+    else:
+        vg, pool = argv[argv.index("-T") + 1].split("/")
+        _add_lv(vg, name, pool, None, "Vwi-a-tz--", _parse_m(argv[argv.index("-V") + 1]))
+    return ""
+
+
+def _lvremove(argv, _input):
+    vg, name = argv[-1].split("/")
+    STATE["lvm"]["lvs"].pop((vg, name), None)
+    return ""
+
+
+def _lvextend(argv, _input):
+    vg, name = argv[-1].split("/")
+    if (vg, name) in STATE["lvm"]["lvs"] and "-L" in argv:
+        STATE["lvm"]["lvs"][(vg, name)]["size"] = _parse_m(argv[argv.index("-L") + 1])
+    return ""
+
+
+def _lvs(argv, _input):
+    vg = argv[-1]
+    rows = [{"lv_name": n, "vg_name": v, "lv_size": str(d["size"]),
+             "pool_lv": d["pool"] or "", "origin": d["origin"] or "", "lv_attr": d["attr"]}
+            for (v, n), d in STATE["lvm"]["lvs"].items() if v == vg]
+    return _report_json("lv", rows)
+
+
+def _noop(argv, _input):
+    return ""
+
+
 _IP_SUB = {
     "netns":  _netns,
     "link":   _link,
@@ -324,6 +432,21 @@ _HANDLERS = {
     "sysctl":      _sysctl,
     "bridge":      _bridge,
     "iptables":    _iptables,
-    "cp":          _cp,
     "debugfs":     _debugfs,
+    "losetup":     _losetup,
+    "pvcreate":    _pvcreate,
+    "pvremove":    _pvremove,
+    "pvs":         _pvs,
+    "vgcreate":    _vgcreate,
+    "vgremove":    _vgremove,
+    "vgchange":    _vgchange,
+    "vgs":         _vgs,
+    "lvcreate":    _lvcreate,
+    "lvremove":    _lvremove,
+    "lvextend":    _lvextend,
+    "lvchange":    _noop,
+    "lvs":         _lvs,
+    "dd":          _noop,
+    "resize2fs":   _noop,
+    "dmsetup":     _noop,
 }

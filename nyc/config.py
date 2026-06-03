@@ -6,8 +6,16 @@ state alongside dadar's: `vms/`, `volumes/` inside that folder. Shared assets
 directories, which the staging script populates.
 """
 import os
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+
+
+def _read_toml(folder: Path) -> dict:
+    """Read this node's config.toml. Stdlib only — the client must stay
+    dadar-free, and dadar ignores the nyc-specific keys (lvm_*) we add here."""
+    path = folder / "config.toml"
+    return tomllib.loads(path.read_text()) if path.exists() else {}
 
 
 @dataclass(frozen=True)
@@ -18,10 +26,6 @@ class Paths:
     @property
     def vms_dir(self) -> Path:
         return self.node_folder / "vms"
-
-    @property
-    def volumes_dir(self) -> Path:
-        return self.node_folder / "volumes"
 
     @property
     def firecracker_bin(self) -> Path:
@@ -51,3 +55,48 @@ def _find_repo_root(start: Path) -> Path:
         if (d / "pyproject.toml").exists() and (d / "nyc").is_dir():
             return d
     return Path(__file__).resolve().parents[2]
+
+
+@dataclass(frozen=True)
+class LvmConfig:
+    """LVM substrate for this node. `device` set => that block device is the PV
+    (prod, one device per machine). `device` None => loopback over a sparse file
+    in the node folder (local/staging), and the VG name is scoped per node so
+    several staged nodes on one host never share a VG."""
+    vg: str
+    thinpool: str
+    device: str | None
+    node_folder: Path
+    loop_size_gb: int
+    base_rootfs_mb: int
+
+    @property
+    def loopback(self) -> bool:
+        return self.device is None
+
+    @property
+    def loop_file(self) -> Path:
+        return self.node_folder / ".lvm" / "pv.img"
+
+    def vg_for(self, node_id: str) -> str:
+        return self.vg if self.device else f"{self.vg}-{node_id[:8]}"
+
+
+def lvm(node_folder: Path | None = None) -> LvmConfig:
+    """Read the node's LVM config from config.toml (NYC_LVM_* env wins)."""
+    folder = (node_folder or Path.cwd()).resolve()
+    data = _read_toml(folder)
+    s = lambda env, key, default: str(os.environ.get(env) or data.get(key) or default)
+    i = lambda env, key, default: int(os.environ.get(env) or data.get(key) or default)
+    return LvmConfig(
+        vg=s("NYC_LVM_VG", "lvm_vg", "nyc"),
+        thinpool=s("NYC_LVM_THINPOOL", "lvm_thinpool", "pool"),
+        device=os.environ.get("NYC_LVM_DEVICE") or data.get("lvm_device") or None,
+        node_folder=folder,
+        loop_size_gb=i("NYC_LVM_LOOP_GB", "lvm_loop_gb", 20),
+        base_rootfs_mb=i("NYC_LVM_ROOTFS_MB", "lvm_rootfs_mb", 4096),
+    )
+
+
+def volume_vg(node_id: str, node_folder: Path | None = None) -> str:
+    return lvm(node_folder).vg_for(node_id)

@@ -23,10 +23,13 @@ def test_node_id_recorded(http, node):
     assert vol["node_id"] == node["node_id"]
 
 
-def test_volume_file_actually_created(http):
-    from nyc.client.privops_fake import STATE
+def test_volume_lv_actually_created(http, node):
+    from nyc.client.volume import lv, names
+    from nyc.config import volume_vg
     vol = http.post("/volumes", json={"name": "fsentry", "size_mb": 32}).json()
-    assert vol["path"] in STATE["files"]
+    vg = volume_vg(node["node_id"])
+    assert vol["path"] == f"/dev/{vg}/{names.data(vol['id'])}"
+    assert lv.exists(vg, names.data(vol["id"]))
 
 
 def test_delete_blocked_when_attached(http):

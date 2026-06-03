@@ -17,6 +17,7 @@ from nyc.client.network.allocate import gateway_cidr
 from nyc.client.network.overlay import anycast_mac, vni_for
 from nyc.client.vm import boot, config, create, inject
 from nyc.client.volume import attach
+from nyc.client.volume.pool import GOLD_DEFAULT
 
 
 @dataclass(frozen=True)
@@ -31,16 +32,18 @@ class VmSpec:
     assets: dict
     vms_dir: Path
     firecracker_bin: Path
+    vg: str
     node_host: str = "127.0.0.1"
     peer_hosts: list = field(default_factory=list)
     dns: str = "1.1.1.1"
     ssh_pubkey: str | None = None
     vcpu_count: int = 1
     mem_mib: int = 512
+    rootfs_origin: str = GOLD_DEFAULT  # golden LV the rootfs is thin-cloned from
 
 
 def run(spec: VmSpec) -> Path:
-    paths = env_setup.run(spec.vms_dir, spec.vm_id, spec.assets)
+    paths = env_setup.run(spec.vms_dir, spec.vm_id, spec.assets, spec.vg, spec.rootfs_origin)
     inject.run(paths, spec.ssh_pubkey, spec.dns,
                has_data_volume=spec.data_volume_path is not None)
     if spec.data_volume_path is not None:

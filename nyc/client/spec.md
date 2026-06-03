@@ -7,12 +7,13 @@ above it.
 ## Modules
 
 ```
-env/       per-VM directory setup (rootfs CoW copy, kernel symlink, ssh key)
+env/       per-VM directory setup (rootfs = thin clone of a golden, kernel + ssh-key symlinks)
 vm/        firecracker process lifecycle + JSON config builder + rootfs inject
 network/   netns, taps, bridges, VXLAN overlay, NAT, IP allocation
-volume/    data volume create/delete
+volume/    LVM thin volumes: lv primitives, pool substrate, data volumes,
+           snapshots/goldens, role-naming, attach
 privops.py sudo shim + backend selector (exports PrivopsError)
-privops_fake.py in-memory state mutator for NYC_BACKEND=fake
+privops_fake.py in-memory state mutator for NYC_BACKEND=fake (incl. an LVM model)
 ```
 
 `network/` is the bulk of the surface — per-VPC anycast bridges joined across
@@ -32,13 +33,15 @@ the action functions, not the helpers.
   `privops.reset_state()` per-fixture.
 - `real`: `subprocess.run(["sudo", "-n", *argv])` for the kernel/namespace ops
   — `ip`, `bridge`, `iptables`, `sysctl`, `mount`, `umount`, `firecracker`,
-  `kill`. The file-only ops in `_NO_SUDO` (`truncate`, `mkfs.ext4`, `cp`,
-  `debugfs`) run **unprivileged**: they only touch files the user already owns
-  (the volume image, the per-VM rootfs copy), and sudo'ing them would make those
-  root-owned so a later teardown/`rm -rf` as the user fails. The staging script
-  writes a sudoers fragment scoped to the sudo'd set.
-  A missing iptables rule/chain (`-C`/`-nL`) exits non-zero, surfaced as
-  `PrivopsError` — the client uses that for check-then-add idempotency.
+  `kill` — **and** the LVM/device toolchain (`lvm`/`pv*`/`vg*`/`lv*`, `losetup`,
+  `dmsetup`, `dd`, `mkfs.ext4`, `debugfs`, `resize2fs`), since LV device nodes
+  are root-owned. Only `truncate` is in `_NO_SUDO` (it creates the loopback
+  backing file the user owns; sudo'ing it would make it root-owned so a later
+  `rm -rf` as the user fails). The staging/deploy scripts write a sudoers
+  fragment scoped to the sudo'd set. A missing iptables rule/chain (`-C`/`-nL`)
+  exits non-zero, surfaced as `PrivopsError` — used for check-then-add
+  idempotency; `lv.list_lvs`/`vg_exists` likewise treat a `PrivopsError` (e.g.
+  VG absent) as empty.
 
 The client code never branches on backend — only `privops.run()` does.
 
@@ -48,11 +51,13 @@ The client code never branches on backend — only `privops.run()` does.
 full interface layout):
 
 ```
-env.setup(vms_dir, vm_id, assets) → CoW-copies rootfs (writable), symlinks kernel + ssh key
-vm.inject.run(paths, ...)       → debugfs edits on the per-VM rootfs copy:
+env.setup(vms_dir, vm_id, assets, vg, rootfs_origin)
+                                → thin-clones the golden LV into a per-VM rootfs LV
+                                  (writable CoW overlay), symlinks its device + kernel + ssh key
+vm.inject.run(paths, ...)       → debugfs edits on the per-VM rootfs clone (its device):
                                    /root/.ssh/authorized_keys (if ssh_pubkey),
                                    /etc/resolv.conf (always), /etc/fstab (if data vol)
-volume.attach(vm_dir, path)     → symlinks data.ext4 into the VM dir (if data volume)
+volume.attach(vm_dir, device)   → symlinks the data volume LV device into the VM dir (if data volume)
 network.bridge.ensure(br, gateway_cidr, mac=anycast_mac(vpc))  → anycast gateway
 network.vxlan.ensure + set_fdb  → per-VPC tunnel to peers (skipped single-host)
 network.nat.ensure(cidr)        → ip_forward + masquerade for internet egress
@@ -65,14 +70,21 @@ vm.create.run(vm_dir, cfg)      → spawns `firecracker --api-sock ... --config 
 vm.boot.run(vm_dir, cfg)        → issues InstanceStart over the API socket
 ```
 
-Teardown (`lifecycle/vm_down`) deletes the netns first — the kernel auto-removes
-the ns-side veth, `nbr0`, and `tap0`; only the host-side veth needs an explicit
-delete. Per-VPC infra (bridge, VXLAN, NAT) is shared and outlives a single VM.
+Teardown (`lifecycle/vm_down(vms_dir, vm_id, vg)`) deletes the netns first — the
+kernel auto-removes the ns-side veth, `nbr0`, and `tap0`; only the host-side
+veth needs an explicit delete — then `env.teardown` rmtrees the dir and
+`lvremove`s the per-VM rootfs clone LV. Per-VPC infra (bridge, VXLAN, NAT) and
+the data volume are shared/independent and outlive a single VM.
 
-Data volume:
+Data volume (a thin LV in the node's pool):
 
 ```
-volume.create.run(path, size_mb)   # truncate -s, mkfs.ext4
-volume.attach.run(vm_dir, path)    # symlink path into vm_dir/data.ext4
-volume.delete.run(path)            # unlink
+volume.create.run(vg, pool, name, size_mb)   # lvcreate --type thin + mkfs.ext4 on the device
+volume.attach.run(vm_dir, device)             # symlink /dev/<vg>/<lv> into vm_dir/data.ext4
+volume.delete.run(vg, name)                   # lvremove -f
 ```
+
+Substrate + images (see `volume/spec.md`): `volume.pool.ensure` builds the VG +
+thin pool + default golden at startup; `volume.snapshot.{create,golden}` take a
+read-only snapshot of a volume / derive a golden from a snapshot; a per-VM
+rootfs is `lv.clone` of a golden.
