@@ -84,12 +84,13 @@ default-golden are built lazily at node startup by `client/volume/pool.ensure`
 (self-healing on reboot), not by `provision.py`. **`teardown.py`** reverses it:
 stop+rm units → `ip netns/link del` the anchored name patterns
 (`../NETWORKING.md` §7) → drop the `NYC-*` iptables chains → restore `ip_forward`
-→ rm node folder + sudoers. `NYC_PURGE=1` (`down --purge`) also removes added
-packages (diffed against a `dpkg` snapshot from `up`) + the checkout **+ the LVM
-VG/PV on `lvm_device`** (a plain `down` leaves the VG, so VM data survives a
-re-`up`), so `up` after `down --purge` rebuilds cleanly. Pre-`up` snapshots live
-in `$HOME/.nyc` (outside the purge-able checkout) so teardown can always find
-them.
+→ rm node folder + sudoers → **remove the LVM VG + PV** (unconditional: plain
+`down` wipes the thin pool and returns the block device empty). `NYC_PURGE=1`
+(`down --purge`) additionally removes caddy (`/usr/bin/caddy`) + uv
+(`~/.local/bin/uv`) + apt packages added by `up` (diffed against the `dpkg`
+snapshot) including `lvm2` + the checkout, so `up` after `down --purge` rebuilds
+fully from scratch. Pre-`up` snapshots live in `$HOME/.nyc` (outside the
+purge-able checkout) so teardown can always find them.
 
 ## VM TTL (auto-delete)
 

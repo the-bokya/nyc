@@ -30,7 +30,7 @@ def _purge_pkgs_cmd() -> str:
         f'pre={state}/pre_pkgs; [ -f "$pre" ] || exit 0; '
         'cur="$(mktemp)"; dpkg -l | awk \'/^ii/{print $2}\' | sort > "$cur"; '
         'added="$(comm -13 "$pre" "$cur")"; rm -f "$cur"; '
-        'known="git curl e2fsprogs iproute2 iptables ca-certificates"; rm=""; '
+        'known="git curl e2fsprogs iproute2 iptables ca-certificates lvm2"; rm=""; '
         'for p in $known; do echo "$added" | grep -qx "$p" && rm="$rm $p"; done; '
         '[ -n "$rm" ] && sudo -n DEBIAN_FRONTEND=noninteractive apt-get remove -y $rm || true'
     )
@@ -46,10 +46,9 @@ server.shell(
     ],
 )
 
-if purge and d.lvm_vg:
-    # The VG holds VM data, so only wipe it on --purge (a plain down preserves it).
+if d.lvm_vg:
     server.shell(
-        name=f"purge LVM vg {d.lvm_vg}",
+        name=f"remove LVM vg {d.lvm_vg}",
         commands=[
             f"sudo -n vgchange -an {d.lvm_vg} 2>/dev/null || true",
             f"sudo -n vgremove -f -y {d.lvm_vg} 2>/dev/null || true",
@@ -90,6 +89,13 @@ files.file(name="remove sysctl drop-in", path="/etc/sysctl.d/99-nyc.conf", prese
 server.shell(name="reload sysctl", commands=["sudo -n sysctl --system >/dev/null 2>&1 || true"])
 
 if purge:
+    server.shell(
+        name="purge caddy + uv",
+        commands=[
+            "sudo -n rm -f /usr/bin/caddy",
+            f"rm -f {home}/.local/bin/uv",
+        ],
+    )
     server.shell(name="purge added packages", commands=[_purge_pkgs_cmd()])
 
 files.directory(name="remove node folder", path=node_folder, present=False)
