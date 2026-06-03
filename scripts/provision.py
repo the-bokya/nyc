@@ -81,7 +81,8 @@ def _nyc_config_cmds() -> list[str]:
     if d.public_iface:
         cmds.append(f'echo "public_iface = \\"{d.public_iface}\\"" >> {config}')
     if ips:
-        cmds.append(f'echo "public_ips = {ips_toml}" >> {config}')
+        # Single quotes so bash doesn't consume the double-quotes inside the array.
+        cmds.append(f"echo 'public_ips = {ips_toml}' >> {config}")
     if d.pubip_gateway:
         cmds.append(f'echo "pubip_gateway = \\"{d.pubip_gateway}\\"" >> {config}')
     return cmds
