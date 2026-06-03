@@ -22,9 +22,9 @@ For each resource type:
 1. Read all DB rows where `node_id == this node`.
 2. Enumerate local resources (vm directories, volume files).
 3. Compute `(orphans = local - expected)` and `(missing = expected - local)`.
-4. Tear down orphans. (Future: recreate missing — punted for v1 because
-   safely re-creating a VM requires also re-running the network setup with
-   the original IP/VPC, which the DB has but the test surface is large.)
+4. Tear down orphans. Recreating missing resources and restarting
+   dead-but-`running` VMs are **not yet done** — the loop is one-directional
+   (prunes excess, never enforces intent). See [`../../FUTURE.md`](../../FUTURE.md).
 
 `POST /reconcile` runs `pass_once.run` synchronously and returns the report.
 That's how tests assert reconciliation actually did something.

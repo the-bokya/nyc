@@ -11,6 +11,13 @@ explained here.
 If you have never built a software network by hand, read top to bottom. Each
 section adds exactly one new idea.
 
+**Contents:** §0 the goal · §1 primitives (netns · veth · bridge · tap · guest
+IP) · §2 one VM on one host · §3 VXLAN across hosts (+ the FDB) · §4 the anycast
+gateway · §5 internet (forwarding + NAT) · §6 guest DNS · §7 naming & limits ·
+§8 teardown order · §9 command reference. The exact names/regexes and the
+deterministic VNI/MAC functions live in code (`client/network/`,
+`scripts/teardown.sh`); this doc is the *why*.
+
 ---
 
 ## 0. The goal

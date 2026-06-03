@@ -65,7 +65,7 @@ install_packages() {
 
 install_caddy() {
     # Static binary from Caddy's official endpoint — a fresh LTS codename may
-    # not be in the apt repo yet (REBUILD 0.2).
+    # not be in the apt repo yet.
     command -v caddy >/dev/null 2>&1 && return
     log "installing caddy (static binary)"
     local tmp; tmp="$(mktemp)"

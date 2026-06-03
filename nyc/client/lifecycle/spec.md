@@ -29,7 +29,9 @@ this.
 2. `vm.inject.run` — one debugfs session on the per-VM rootfs copy:
    - `/root/.ssh/authorized_keys` — writes `ssh_pubkey` (if provided)
    - `/etc/resolv.conf` — writes `nameserver <dns>` (always)
-   - `/etc/fstab` — adds `/dev/vdb /home ext4 defaults,nofail` (if data volume)
+   - `/etc/fstab` + a systemd `home.mount` unit — mounts `/dev/vdb` at `/home`
+     (if data volume; the unit is belt-and-suspenders for images lacking the
+     fstab generator)
 
    The Firecracker Ubuntu CI image has no cloud-init; offline debugfs edits on
    the per-VM copy are the only way to inject per-VM config at rest.

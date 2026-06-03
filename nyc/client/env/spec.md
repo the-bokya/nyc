@@ -11,7 +11,7 @@ A VM directory is `<vms_dir>/<vm_id>/`. Its members are defined once, in
 
 ```
 <vms_dir>/<vm_id>/
-├── rootfs.ext4   -> symlink to assets/rootfs.ext4 (read-only)
+├── rootfs.ext4   per-VM CoW copy of assets/rootfs.ext4 (writable)
 ├── vmlinux       -> symlink to assets/vmlinux
 ├── id_ed25519    -> symlink to assets/id_ed25519 (ssh private key)
 ├── id_ed25519.pub
@@ -30,17 +30,16 @@ A VM directory is `<vms_dir>/<vm_id>/`. Its members are defined once, in
 | File | Public fn | Does |
 |---|---|---|
 | `paths.py` | `for_vm(vms_dir, vm_id)` | Build a `VmPaths` for a VM. |
-| `setup.py` | `run(vms_dir, vm_id, assets, copy_rootfs=False)` | `mkdir` the VM dir, wire rootfs/kernel/ssh-key from `assets`, return `VmPaths`. |
+| `setup.py` | `run(vms_dir, vm_id, assets)` | `mkdir` the VM dir, copy rootfs + symlink kernel/ssh-key from `assets`, return `VmPaths`. |
 | `teardown.py` | `run(vm_dir)` | `rmtree` the VM dir (idempotent). Also exposes `list_dirs(vms_dir)`. |
 
 `assets` is a dict with keys `rootfs`, `kernel`, `ssh_key` mapping to source
 `Path`s (populated by `fetch_artifacts.sh` into `assets/`). `setup._link`
 replaces any pre-existing target so re-running `setup` is idempotent.
 
-`copy_rootfs`: the kernel and ssh key are always symlinked, but the rootfs is
-either symlinked to the shared read-only image (default) **or** copied into the
-VM dir as its own writable file (`copy_rootfs=True`). A copy is what lets a
-single VM carry per-VM data baked into its rootfs — e.g. an ssh key via
-`vm.inject_key`. The copy goes through `privops` (`cp --reflink=auto`): on
-`real` that is a CoW clone where the fs supports it; on `fake` it is recorded,
-not performed (tests have no real image), so the rest of the path is unchanged.
+The rootfs is **always** a per-VM copy via `privops` (`cp --reflink=auto`) — a
+CoW clone where the fs supports it, a full copy otherwise. Every VM gets a
+writable root so `vm.inject` can bake per-VM config (ssh key, DNS, fstab) into
+it offline before boot. The kernel and ssh key are symlinked (shared,
+read-only). On `fake` the copy is recorded, not performed (tests have no real
+image), so the rest of the path is unchanged.

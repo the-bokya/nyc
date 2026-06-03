@@ -48,7 +48,8 @@ mem_mib=512}` — deliberately **no `vpc_id`, no `node_id`**.
   per-VM rootfs copy. The shared base image is never modified.
 
 `DELETE /vms/{id}` currently removes the VM only — it does **not** cascade to
-the auto-created volume. (Open question for the lifecycle work: should it?)
+the auto-created volume, which leaks (open question — see
+[`../../FUTURE.md`](../../FUTURE.md)).
 
 ## Lifecycle: `POST /vms/{id}/{stop,start,reboot}`
 

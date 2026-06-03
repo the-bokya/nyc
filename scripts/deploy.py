@@ -11,7 +11,7 @@ Uploads + runs the bash provision.sh / teardown.sh on each node over
   deploy.py overlay-check cluster.toml <vpc_id>  # per-node VXLAN/FDB/NAT audit
 
 API calls (health, default VPC, smoke) run *on* a node via ssh -> localhost,
-so the control machine needs no private-network access. See REBUILD Part F.
+so the control machine needs no private-network access. See scripts/spec.md.
 """
 import argparse
 import base64

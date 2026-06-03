@@ -48,7 +48,7 @@ The client code never branches on backend — only `privops.run()` does.
 full interface layout):
 
 ```
-env.setup(vm_dir, vm_id)        → CoW copies rootfs (writable), symlinks kernel + ssh key
+env.setup(vms_dir, vm_id, assets) → CoW-copies rootfs (writable), symlinks kernel + ssh key
 vm.inject.run(paths, ...)       → debugfs edits on the per-VM rootfs copy:
                                    /root/.ssh/authorized_keys (if ssh_pubkey),
                                    /etc/resolv.conf (always), /etc/fstab (if data vol)

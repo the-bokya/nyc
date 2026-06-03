@@ -18,6 +18,9 @@ Schema choices:
   doesn't apply to TEXT PKs).
 - `cidr` is a free-form string (e.g. `10.10.0.0/24`). Validated by Python at
   the router layer (`ipaddress.ip_network(strict=True)`), not by SQL.
+- `vms.ip` uniqueness within a VPC is enforced only in Python (`pick_ip`); there
+  is no `UNIQUE(vpc_id, ip)` index, so concurrent creates can race. See
+  [`../../FUTURE.md`](../../FUTURE.md).
 - `vms.status` and `volumes.status` are TEXT, not CHECK-constrained. Migration
   cost outweighs the value — the router layer enforces the enum.
 - `vms.vcpu_count` / `vms.mem_mib` carry the VM's machine shape (defaults 1 /

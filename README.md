@@ -9,8 +9,8 @@ of VMs, and they all share one connected transit map (the raft cluster).
 
 - Per-node Firecracker microVMs with isolated `/dev/net/tun` taps in Linux network namespaces.
 - Cluster-wide VPCs (CIDR-scoped private networks). VMs in the same VPC reach each other across nodes over a per-VPC VXLAN overlay; the VPC bridge is an anycast gateway, so VMs also get internet access (NAT) through their local node.
-- Read-only shared rootfs; per-VM read/write data volumes (files for now, LVM later).
-- DB-is-source-of-truth: a background reconciler kills orphan VMs/taps/volumes, recreates rows whose backing resource went missing, and re-syncs each VPC's VXLAN flood list as nodes join/leave.
+- Per-VM **writable rootfs** — a CoW copy of a shared base image, configured offline with `debugfs` (ssh key, DNS, fstab) — plus an optional per-VM read/write data volume (ext4 files for now, LVM later).
+- DB-is-source-of-truth: a background reconciler kills orphan VMs/taps/volumes, reaps TTL-expired VMs, and re-syncs each VPC's VXLAN flood list as nodes join/leave. (Recreating missing resources is not yet done — see [`FUTURE.md`](FUTURE.md).)
 
 The cross-node networking is documented ground-up in [`NETWORKING.md`](NETWORKING.md).
 
@@ -53,13 +53,15 @@ nyc/
 │   │   └── privops.py    # sudo shim (real | fake), selected by NYC_BACKEND
 │   └── reconciler/       # background convergence loop
 ├── tests/                # pytest, NYC_BACKEND=fake
-├── scripts/
-│   ├── install_firecracker.sh
-│   ├── fetch_artifacts.sh    # + inject_ssh_key.sh / inject_resolv.sh (bake key + DNS)
-│   ├── preflight.py          # read-only SSH probe: do the bare-metal nodes meet constraints?
-│   ├── cluster.toml.example  # bare-metal inventory schema
-│   └── stage.sh
+├── scripts/             # stage.sh (single-host) + deploy.py (bare-metal)
+│   ├── install_firecracker.sh, fetch_artifacts.sh  # binary + kernel/rootfs/ssh-key
+│   ├── stage.sh             # single-host: boot N nodes, run the e2e suite
+│   ├── preflight.py         # read-only SSH readiness probe for bare-metal nodes
+│   ├── deploy.py            # bare-metal orchestrator: up/down/status/ssh/overlay-check
+│   ├── provision.sh, teardown.sh   # per-node setup / reverse, run by deploy.py over ssh
+│   └── cluster.toml.example # bare-metal inventory schema
 └── assets/               # populated by fetch_artifacts.sh
 ```
 
-Each directory has its own `spec.md` documenting the contract and behaviour.
+Each directory has its own `spec.md` documenting the contract and behaviour;
+roadmap and known gaps are in [`FUTURE.md`](FUTURE.md).

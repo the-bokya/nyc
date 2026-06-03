@@ -56,6 +56,10 @@ Interface names are kept ≤ 15 chars on purpose:
 - In-netns bridge is always `nbr0`; the netns gives it its own namespace, so a
   fixed name is safe.
 
+Caveat: bridge/VXLAN names use only the first 4 hex chars of each id (16 bits),
+so two VPCs sharing a node and a 4-hex prefix would collide onto one bridge
+(silent cross-VPC L2 bleed) at scale. See [`../../../FUTURE.md`](../../../FUTURE.md).
+
 ## Teardown ordering
 
 `vm_down` deletes the **netns first**: the kernel then auto-removes the
