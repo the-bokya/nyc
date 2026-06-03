@@ -125,17 +125,22 @@ def _link(argv, _input):
 
 
 def _addr(argv, _input):
-    # ["ip", "addr", "add", "10.0.0.1/24", "dev", "tap0"]
-    if argv[2] == "add":
+    # ["ip", "addr", "add"|"del"|"show", ...]
+    op = argv[2]
+    if op == "add":
         ip = argv[3]
         dev = argv[argv.index("dev") + 1]
         STATE["addrs"].setdefault(dev, []).append(ip)
-    elif argv[2] == "del":
+    elif op == "del":
         ip = argv[3]
         dev = argv[argv.index("dev") + 1]
         addrs = STATE["addrs"].get(dev, [])
         if ip in addrs:
             addrs.remove(ip)
+    elif op == "show":
+        dev = argv[argv.index("dev") + 1] if "dev" in argv else None
+        if dev:
+            return "\n".join(f"    inet {a}" for a in STATE["addrs"].get(dev, []))
     return ""
 
 
@@ -264,6 +269,13 @@ def _ipt_check(t, a):     # -C CHAIN rule... — raise if the exact rule is abse
 
 def _ipt_append(t, a):    # -A CHAIN rule...
     t["rules"].setdefault(a[0], []).append(tuple(a[1:])); return ""
+
+
+def _ipt_insert(t, a):    # -I CHAIN [pos] rule...
+    chain = a[0]
+    tail = a[1:]
+    rule = tail[1:] if tail and tail[0].isdigit() else tail
+    t["rules"].setdefault(chain, []).insert(0, tuple(rule)); return ""
 
 
 def _ipt_delete(t, a):    # -D CHAIN rule...
@@ -415,6 +427,7 @@ _IPT_OPS = {
     "-L": _ipt_list,
     "-C": _ipt_check,
     "-A": _ipt_append,
+    "-I": _ipt_insert,
     "-D": _ipt_delete,
     "-F": _ipt_flush,
     "-X": _ipt_xchain,

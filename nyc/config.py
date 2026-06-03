@@ -100,3 +100,45 @@ def lvm(node_folder: Path | None = None) -> LvmConfig:
 
 def volume_vg(node_id: str, node_folder: Path | None = None) -> str:
     return lvm(node_folder).vg_for(node_id)
+
+
+def cluster_domain(node_folder: Path | None = None) -> str | None:
+    """Cluster root domain (e.g. 'example.com'). Env NYC_DOMAIN wins."""
+    override = os.environ.get("NYC_DOMAIN")
+    if override:
+        return override
+    folder = (node_folder or Path.cwd()).resolve()
+    return _read_toml(folder).get("domain") or None
+
+
+@dataclass(frozen=True)
+class PubipConfig:
+    provider: str
+    iface: str
+    addresses: list[str]
+    gateway: str | None
+    scaleway_zone: str | None
+    scaleway_project_id: str | None
+    scaleway_server_id: str | None
+    secret_key: str | None  # SCW_SECRET_KEY env
+
+
+def pubip(node_folder: Path | None = None) -> PubipConfig:
+    """Read public-IP config (NYC_PUBIP_* env wins over config.toml)."""
+    folder = (node_folder or Path.cwd()).resolve()
+    data = _read_toml(folder)
+    s = lambda env, key, default=None: (os.environ.get(env) or data.get(key) or default) or None
+    ss = lambda env, key, default: str(os.environ.get(env) or data.get(key) or default)
+    raw_ips = os.environ.get("NYC_PUBLIC_IPS") or data.get("public_ips") or []
+    if isinstance(raw_ips, str):
+        raw_ips = [a.strip() for a in raw_ips.split(",") if a.strip()]
+    return PubipConfig(
+        provider=ss("NYC_PUBIP_PROVIDER", "pubip_provider", "scaleway"),
+        iface=ss("NYC_PUBLIC_IFACE", "public_iface", "eth0"),
+        addresses=list(raw_ips),
+        gateway=s("NYC_PUBIP_GATEWAY", "pubip_gateway"),
+        scaleway_zone=s("NYC_SCW_ZONE", "scaleway_zone"),
+        scaleway_project_id=s("NYC_SCW_PROJECT_ID", "scaleway_project_id"),
+        scaleway_server_id=s("NYC_SCW_SERVER_ID", "scaleway_server_id"),
+        secret_key=os.environ.get("SCW_SECRET_KEY"),
+    )

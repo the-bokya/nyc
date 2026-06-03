@@ -14,6 +14,8 @@ lvm_thinpool = "pool"                                 # thin pool inside that VG
 http_port  = 8000
 rqlite_http_port = 4001
 rqlite_raft_port = 4002
+domain     = "example.com"                            # cluster root domain; operator points *.example.com to the proxy public IP
+pubip_provider = "scaleway"                           # default public-IP provider (scaleway|static)
 
 # One node must have bootstrap = true; the rest join it.
 # host        = private/underlay IP (raft + cross-node proxy + VXLAN endpoints)
@@ -30,6 +32,11 @@ public_host = "203.0.113.1"
 domain = "n1.example.com"
 lvm_device = "/dev/nvme1n1"
 bootstrap = true
+# Public IP pool for this node (IPs already attached to the Elastic Metal server at Scaleway).
+# nyc binds each to the host iface and does 1:1 DNAT/SNAT to route internet traffic to a VM.
+public_iface   = "ens3"
+public_ips     = ["203.0.113.10", "203.0.113.11"]
+pubip_gateway  = "62.210.0.1"                          # Scaleway default gateway for flexible IPs
 
 [[nodes]]
 name = "n2"
@@ -37,3 +44,6 @@ host = "10.0.0.12"
 public_host = "203.0.113.2"
 domain = "n2.example.com"
 lvm_device = "/dev/nvme1n1"
+public_iface   = "ens3"
+public_ips     = ["203.0.113.20"]
+pubip_gateway  = "62.210.0.1"

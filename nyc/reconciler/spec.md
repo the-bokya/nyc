@@ -8,13 +8,16 @@ the diff each interval and brings reality to match.
 
 | File | Role |
 |---|---|
-| `pass_once.py`   | `run(client, node_id) → {ttl, vms, volumes, snapshots, overlay}` — one shot, returns a report. |
-| `ttl_pass.py`    | Delete local VMs older than `NYC_VM_TTL_MINUTES` (0/unset = off). |
-| `vms_pass.py`    | Reconcile `vms` table against `<vms_dir>/*`; also prune `rootfs-*` LVs with no row. |
-| `volumes_pass.py`| Reconcile `volumes` table against the `data-*` thin LVs in the node's VG. |
+| `pass_once.py`    | `run(client, node_id) → {ttl, vms, volumes, snapshots, overlay, pubip}` — one shot, returns a report. |
+| `ttl_pass.py`     | Delete local VMs older than `NYC_VM_TTL_MINUTES` (0/unset = off). |
+| `vms_pass.py`     | Reconcile `vms` table against `<vms_dir>/*`; also prune `rootfs-*` LVs with no row. Calls teardown cascade. |
+| `volumes_pass.py` | Reconcile `volumes` table against the `data-*` thin LVs in the node's VG. |
 | `snapshots_pass.py`| Reconcile `snapshots` table against the `snap-*`/`gold-*` LVs (keeps reserved `gold-default`). |
-| `overlay_pass.py`| Re-sync each local VPC's VXLAN head-end FDB to the current peer set. |
-| `loop.py`        | asyncio background task, started by `nyc.app` on FastAPI lifespan startup |
+| `overlay_pass.py` | Re-sync each local VPC's VXLAN head-end FDB to the current peer set. |
+| `pubip_pass.py`   | Re-ensure host bind + NAT for every `PublicIps` row owned by this node. Survives reboots. |
+| `loop.py`         | asyncio background task, started by `nyc.app` on FastAPI lifespan startup. |
+| `executor.py`     | asyncio background task that atomically claims and runs `Tasks` rows for this node. One task per tick, in a thread. |
+| `task_runner.py`  | Dispatch by `type`: `reverse_proxy_setup` → `proxy.push.setup`; `proxy_reload` → render Caddyfile + `proxy.push.reload`. |
 
 ## Behaviour
 
@@ -52,12 +55,31 @@ underlay IPs from the dadar `nodes` registry (via `nyc.peers`) and rewrites each
 VXLAN's flood entries to exactly that set. No-op on a single host (loopback
 node), where there is no tunnel to maintain. Returns `{"synced": [vpc_id, ...]}`.
 
+## Public-IP pass
+
+`pubip_pass` is called from `pass_once.run` after every other pass. For each
+`PublicIps` row with `node_id == this_node` and `status = attached`, it calls
+`pubip.host.bind` + `pubip.nat.attach` (both idempotent). This re-applies the
+`/32` address and DNAT/SNAT rules after a reboot, since `iptables` and `ip addr`
+rules are not persistent across reboots.
+
+## Executor
+
+`executor.py` runs independently from the reconciler loop (separate asyncio task,
+started in `app._on_startup`). Every `NYC_EXECUTOR_INTERVAL` seconds (default 5),
+it claims one `pending` task for this node by updating `status='running'`, then
+re-reads to confirm the win (handles concurrent multi-node claim races). The task
+runs in a thread via `asyncio.to_thread` so blocking SSH work never stalls the
+event loop. On completion, the row is updated to `succeeded`/`failed` with the
+output/error as `result`.
+
 ## Interval
 
 `NYC_RECONCILE_INTERVAL` env var (seconds, default 5). Set to a small value
-in tests, large in production.
+in tests, large in production. `NYC_EXECUTOR_INTERVAL` (default 5) controls
+the task executor independently.
 
 ## Failure mode
 
-The loop swallows exceptions per iteration. A panicking pass should NOT take
+Both loops swallow exceptions per iteration. A panicking pass should NOT take
 the whole node down — that would amplify a partial failure into a total one.

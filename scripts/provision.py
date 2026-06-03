@@ -66,6 +66,27 @@ def _lvm_config_cmds() -> list[str]:
     return cmds
 
 
+def _nyc_config_cmds() -> list[str]:
+    # Write domain / public-IP keys to config.toml. Strip prior lines first so
+    # re-provision never duplicates. public_ips is written as a TOML array.
+    ips = d.public_ips  # list[str] from inventory.py
+    ips_toml = "[" + ", ".join(f'"{a}"' for a in ips) + "]"
+    cmds = [
+        f'sed -i "/^domain\\b/d;/^pubip_provider/d;/^public_iface/d;/^public_ips/d;/^pubip_gateway/d" {config}',
+    ]
+    if d.domain:
+        cmds.append(f'echo "domain = \\"{d.domain}\\"" >> {config}')
+    if d.pubip_provider:
+        cmds.append(f'echo "pubip_provider = \\"{d.pubip_provider}\\"" >> {config}')
+    if d.public_iface:
+        cmds.append(f'echo "public_iface = \\"{d.public_iface}\\"" >> {config}')
+    if ips:
+        cmds.append(f'echo "public_ips = {ips_toml}" >> {config}')
+    if d.pubip_gateway:
+        cmds.append(f'echo "pubip_gateway = \\"{d.pubip_gateway}\\"" >> {config}')
+    return cmds
+
+
 server.shell(
     name="preflight: kvm + arch + sudo",
     commands=["test -e /dev/kvm", '[ "$(uname -m)" = x86_64 ]', "sudo -n true"],
@@ -172,6 +193,7 @@ server.shell(
     ],
 )
 server.shell(name="write lvm config", commands=_lvm_config_cmds())
+server.shell(name="write nyc config", commands=_nyc_config_cmds())
 
 node_unit = files.template(
     name="nyc-node.service",

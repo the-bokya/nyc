@@ -10,10 +10,10 @@ Artifact fetch, single-host staging, and bare-metal preflight + **deploy**
 | `stage.sh [N] [--real] [--keep] [--no-tests]` | Single-host emulation: boot N dadar nodes in `./stage/`, run the e2e suite. `host` stays `127.0.0.1`, so the cross-node overlay isn't exercised here. `--real` builds each node a loopback-backed VG (sparse `pv.img` in its folder); on exit it kills firecracker first (so the LV devices close), then detaches the loops + removes those VGs, and a startup sweep reclaims any loops/VGs a prior SIGKILL'd run leaked. |
 | `preflight.py <cluster.toml>` | **Read-only** bare-metal readiness probe (below). |
 | `deploy.py {up,down,status,ssh,overlay-check} <cluster.toml> [--purge]` | Bare-metal orchestrator over the pyinfra deploys (below). |
-| `inventory.py` | pyinfra inventory: turns `cluster.toml` (path in `$NYC_CLUSTER`) into hosts + per-host `host.data`. |
-| `provision.py` / `teardown.py` | pyinfra deploys: idempotent per-node setup / reverse, driven by `deploy.py` over agent-forwarded ssh. |
+| `inventory.py` | pyinfra inventory: turns `cluster.toml` into hosts + per-host `host.data`. Flattens domain, pubip_provider, public_iface, public_ips, pubip_gateway into each host. |
+| `provision.py` / `teardown.py` | pyinfra deploys: idempotent per-node setup / reverse. `_nyc_config_cmds()` writes domain + public-IP keys to each node's `config.toml`. |
 | `templates/` | Jinja artifacts rendered by `provision.py`: `sudoers.j2`, `nyc-node.service.j2`, `nyc-caddy.service.j2`, `Caddyfile.j2`. |
-| `cluster.toml.example` | Inventory schema for `preflight.py` / `deploy.py`. |
+| `cluster.toml.example` | Inventory schema for `preflight.py` / `deploy.py`. Includes `[cluster] domain`, `pubip_provider`, and per-node `public_iface`, `public_ips`, `pubip_gateway`. |
 
 **Locked choices:** delivery = `git clone` (recursive) at the inventory `ref`;
 supervision = systemd; inventory = TOML; git auth = SSH agent forwarding; node

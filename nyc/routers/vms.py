@@ -273,6 +273,8 @@ def _spawn_row(body: SpawnIn, node_id: str, vpc_id: str, ip: str, vol_id: str) -
 
 
 def _delete_local(vm_id: str, node_id: str, client: Client) -> None:
+    from nyc.client.vm_deps import teardown as teardown_deps
+    teardown_deps(vm_id, client)
     paths = resolve()
     vm_down.run(paths.vms_dir, vm_id, volume_vg(node_id))
     Vms(client).docs.delete(where={"id": vm_id})

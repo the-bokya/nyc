@@ -1,14 +1,18 @@
 # tables
 
-Four ORM models, one file each. Each subclasses `dadar.orm.ORM` and declares
+Eight ORM models, one file each. Each subclasses `dadar.orm.ORM` and declares
 `name` + `fields` only — no methods. CRUD goes through `Vpcs(client).docs.*`.
 
 | File | Purpose | Scope |
 |---|---|---|
-| `vpcs.py`      | private network CIDR ranges     | global (no `node_id`) |
-| `volumes.py`   | per-VM data volumes (thin LVs)  | node-bound |
-| `vms.py`       | running microVMs                | node-bound |
-| `snapshots.py` | read-only thin images: `role` ∈ {snapshot, golden}, `disk` ∈ {root, data} | node-bound |
+| `vpcs.py`       | private network CIDR ranges                                           | global |
+| `volumes.py`    | per-VM data volumes (thin LVs)                                        | node-bound |
+| `vms.py`        | running microVMs                                                       | node-bound |
+| `snapshots.py`  | read-only thin images: `role` ∈ {snapshot, golden}, `disk` ∈ {root, data} | node-bound |
+| `public_ips.py` | public IP ↔ VM binding; `provider` ∈ {scaleway, static}; `status` ∈ {attached, released, failed} | node-bound |
+| `domains.py`    | subdomain → VM routing intent; `fqdn` is UNIQUE                       | global |
+| `tasks.py`      | async guest operations; `type` ∈ {reverse_proxy_setup, proxy_reload}; `status` ∈ {pending, running, succeeded, failed} | node-bound |
+| `proxies.py`    | one reverse-proxy VM per VPC; `vpc_id` is UNIQUE                      | global |
 
 `ALL` in `__init__.py` is the list registered with `DadarApp(tables=...)`.
 

@@ -2,6 +2,7 @@ from dadar.orm import Client
 
 from nyc.client.lifecycle import vm_down
 from nyc.client.vm.list_dirs import run as list_vm_dirs
+from nyc.client.vm_deps import teardown as teardown_deps
 from nyc.client.volume import lv, names
 from nyc.config import resolve, volume_vg
 from nyc.tables import Vms
@@ -14,6 +15,7 @@ def reconcile(client: Client, node_id: str) -> dict:
     on_disk = set(list_vm_dirs(paths.vms_dir))
     orphans = on_disk - expected
     for vm_id in orphans:
+        teardown_deps(vm_id, client)
         vm_down.run(paths.vms_dir, vm_id, vg)  # also removes the rootfs clone LV
     _prune_rootfs_lvs(vg, expected)
     return {"expected": len(expected), "on_disk": len(on_disk), "killed": sorted(orphans)}

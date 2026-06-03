@@ -392,3 +392,38 @@ guest eth0 ─ tap0 ─ nbr0 ─ vmn ═(veth)═ vmh ─┬─ VPC bridge (gate
                                               │
                             internet ◀── MASQUERADE ◀── ip_forward ◀── gateway (local termination)
 ```
+
+---
+
+## Public IP: 1:1 DNAT/SNAT
+
+A public IP can be attached to any VM (most usefully the proxy VM) via
+`POST /vms/{id}/public-ip`. nyc wires it at the host level:
+
+1. **Host bind**: `ip addr add <public_ip>/32 dev <iface>` — the host's network
+   interface starts responding to ARP for the IP (Scaleway flexible IP is
+   pre-attached to the server; nyc only binds the local alias).
+2. **PREROUTING DNAT** (in `NYC-PREROUTING` chain): internet traffic arriving on
+   `<public_ip>` is rewritten to `<vm_ip>` before routing, so the kernel routes
+   it into the VPC bridge toward the VM.
+3. **POSTROUTING SNAT** (inserted at position 1 in `NYC-POSTROUTING` chain):
+   return traffic from `<vm_ip>` is rewritten to `<public_ip>` before leaving the
+   host — the VM egresses on its dedicated public IP, not the node's shared source.
+   This rule is inserted **before** the general MASQUERADE rule so it wins.
+
+All rules are idempotent (`iptables -C` guard) and re-applied after every reboot
+by `pubip_pass` in the reconciler.
+
+```
+internet ──► <public_ip>:80
+               │  PREROUTING DNAT → <vm_ip>:80
+               ▼
+           VPC bridge → tap → VM eth0
+               │
+               └─ return: POSTROUTING SNAT <vm_ip> → <public_ip> ──► internet
+```
+
+The pool of public IPs available for a node is declared in `cluster.toml`
+(`public_ips = [...]`, `public_iface`, `pubip_gateway`). IPs must already be
+attached to the Elastic Metal server at the provider (Scaleway flexible IPs).
+nyc does not call the Scaleway API to order or attach IPs.

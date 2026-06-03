@@ -8,9 +8,13 @@ belong in `nyc.client`. Routers compose: ORM read → client call → ORM write.
 | `vpcs.py`      | `/vpcs`          | Global. No proxy. |
 | `volumes.py`   | `/volumes`       | Node-bound (thin LVs). POST/PATCH/DELETE proxy via `_proxy.forward`. POST takes `size_mb` or `from_snapshot` (clone); PATCH `{size_mb}` resizes (`lvextend`+`resize2fs`). |
 | `snapshots.py` | `/snapshots`, `/images` | Node-bound, generic over root + data disks. `POST /snapshots` takes `{volume_id}` (a data volume, `disk=data`) **or** `{vm_id}` (that VM's root LV, `disk=root`). `/images` promotes a snapshot to a golden via `from_snapshot` (inherits `disk`). Writes proxy to the resource's owner; reads serve from local raft. |
-| `vms.py`       | `/vms`           | Node-bound. `POST /vms` runs the full lifecycle composer. `POST /vms/spawn` is the turnkey path (see below). |
-| `reconcile.py` | `/reconcile`     | POST triggers one immediate reconciler pass on the receiving node. |
-| `_proxy.py`    | (helper)         | Looks up `nodes.host` + `nodes.http_port` and forwards via httpx over the private network. |
+| `vms.py`        | `/vms`           | Node-bound. `POST /vms` runs the full lifecycle composer. `POST /vms/spawn` is the turnkey path (see below). |
+| `reconcile.py`  | `/reconcile`     | POST triggers one immediate reconciler pass on the receiving node. |
+| `_proxy.py`     | (helper)         | Looks up `nodes.host` + `nodes.http_port` and forwards via httpx over the private network. |
+| `domains.py`    | `/domains`       | Global. `POST /domains {subdomain|fqdn, vm_id, port=80}` attaches a domain to a VM and enqueues a `proxy_reload` task. `DELETE /domains/{id}` detaches and reloads. |
+| `public_ips.py` | `/vms/{id}/public-ip`, `/public-ips` | Node-bound (proxied to VM owner). POST acquires a free IP from the pool, binds it on the host, installs DNAT/SNAT rules, and inserts a `PublicIps` row. DELETE tears down the NAT and unbinds. |
+| `tasks.py`      | `/vms/{id}/tasks`, `/tasks`, `/tasks/{id}` | `POST /vms/{id}/tasks {type, params?}` enqueues an async task on the VM's owner node. Poll `GET /tasks/{id}` for status + result. |
+| `proxy.py`      | `/proxy`         | Turnkey. `POST /proxy` spawns the proxy VM, attaches a public IP, inserts a `Proxies` row, and enqueues `reverse_proxy_setup` + `proxy_reload` tasks. `GET /proxy` shows the VPC proxy, its public IP, and domain count. |
 
 Patterns:
 - 400 for bad input (unknown vpc_id, bad cidr).
@@ -57,9 +61,10 @@ no `node_id`**.
   fstab entry are written via offline debugfs edits (`vm.inject.run`) on the
   per-VM rootfs clone. The golden image is read-only and never modified.
 
-`DELETE /vms/{id}` currently removes the VM only — it does **not** cascade to
-the auto-created volume, which leaks (open question — see
-[`../../FUTURE.md`](../../FUTURE.md)).
+`DELETE /vms/{id}` cascades: it detaches the VM's public IP (NAT + host unbind
++ backend release), deletes its `Domains` rows, and clears the `Proxies` row if
+this VM was the VPC's proxy — before removing the VM row and tearing down the
+firecracker env. The same cascade runs in `vms_pass` orphan teardown.
 
 ## Lifecycle: `POST /vms/{id}/{stop,start,reboot}`
 
