@@ -14,13 +14,14 @@ lvm_thinpool = "pool"                                 # thin pool inside that VG
 http_port  = 8000
 rqlite_http_port = 4001
 rqlite_raft_port = 4002
-domain     = "example.com"                            # cluster root domain; operator points *.example.com to the proxy public IP
+vm_domain  = "example.com"                            # VM routing root domain; operator points *.example.com to the proxy VM public IP
 pubip_provider = "scaleway"                           # default public-IP provider (scaleway|static)
 
 # One node must have bootstrap = true; the rest join it.
 # host        = private/underlay IP (raft + cross-node proxy + VXLAN endpoints)
 # public_host = public IPv4 (control reaches it here; ssh jump server)
-# domain      = public DNS name (Caddy automatic HTTPS); must resolve to public_host
+# domain      = per-node control API domain (host Caddy gets a TLS cert for this);
+#               must resolve to public_host. SEPARATE from [cluster] vm_domain.
 # lvm_device  = the ONE block device nyc owns + LVM-formats on this node (set per machine;
 #               device names differ). nyc runs pvcreate/vgcreate/thin-pool on it at startup,
 #               only when the VG is absent and the device is empty (NYC_LVM_FORCE=1 overrides).

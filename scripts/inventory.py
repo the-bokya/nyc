@@ -47,7 +47,7 @@ def _host(node: dict) -> tuple[str, dict]:
         "vm_key": str(_keydir / "id_ed25519"),
         "vm_pub": str(_keydir / "id_ed25519.pub"),
         # public IP / domain config (written into each node's config.toml by provision.py)
-        "domain": _cluster.get("domain", ""),
+        "cluster_domain": _cluster.get("vm_domain", ""),
         "pubip_provider": _cluster.get("pubip_provider", "scaleway"),
         "public_iface": node.get("public_iface", ""),
         "public_ips": node.get("public_ips", []),

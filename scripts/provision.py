@@ -74,8 +74,8 @@ def _nyc_config_cmds() -> list[str]:
     cmds = [
         f'sed -i "/^domain\\b/d;/^pubip_provider/d;/^public_iface/d;/^public_ips/d;/^pubip_gateway/d" {config}',
     ]
-    if d.domain:
-        cmds.append(f'echo "domain = \\"{d.domain}\\"" >> {config}')
+    if d.cluster_domain:
+        cmds.append(f'echo "domain = \\"{d.cluster_domain}\\"" >> {config}')
     if d.pubip_provider:
         cmds.append(f'echo "pubip_provider = \\"{d.pubip_provider}\\"" >> {config}')
     if d.public_iface:
