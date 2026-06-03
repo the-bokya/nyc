@@ -70,7 +70,16 @@ LVM/device toolchain) → `dadar init` → write nyc's `lvm_*` keys into the nod
 `config.toml` (`lvm_device` is the one block device nyc owns; `lvm_vg`/
 `lvm_thinpool` name the VG/pool nyc creates on first start) → enable+start
 `nyc-node.service` + `nyc-caddy.service` (per-node Caddyfile, automatic HTTPS;
-each restarts only when its unit template changed). The VG/thin-pool/
+each restarts only when its unit template changed).
+
+Two non-obvious implementation points: (1) `git fetch` and `submodule update`
+both run with `GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=accept-new'`
+because a freshly imaged node has an empty `~/.ssh/known_hosts` and would
+otherwise stall waiting for interactive host-key confirmation; `accept-new`
+auto-adds the key on first contact while still rejecting a *changed* key on
+re-runs. (2) pyinfra v3's `files.template` passes template variables as plain
+`**kwargs`, not a `data={}` dict — all four template calls in this file pass
+their variables as keyword arguments accordingly. The VG/thin-pool/
 default-golden are built lazily at node startup by `client/volume/pool.ensure`
 (self-healing on reboot), not by `provision.py`. **`teardown.py`** reverses it:
 stop+rm units → `ip netns/link del` the anchored name patterns

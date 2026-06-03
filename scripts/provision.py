@@ -110,9 +110,9 @@ server.shell(
         f"git -C {remote_dir} remote get-url origin >/dev/null 2>&1 "
         f"|| git -C {remote_dir} remote add origin {d.repo_url}",
         f"git -C {remote_dir} remote set-url origin {d.repo_url}",
-        f"git -C {remote_dir} fetch origin {d.ref}",
+        f"GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=accept-new' git -C {remote_dir} fetch origin {d.ref}",
         f"git -C {remote_dir} checkout -f FETCH_HEAD",
-        f"git -C {remote_dir} submodule update --init --recursive",
+        f"GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=accept-new' git -C {remote_dir} submodule update --init --recursive",
     ],
 )
 
@@ -156,7 +156,7 @@ server.sysctl(
 files.template(
     name="sudoers",
     src=str(TEMPLATES / "sudoers.j2"), dest="/etc/sudoers.d/nyc", mode="440",
-    data={"ssh_user": d.ssh_user, "firecracker": f"{nyc_dir}/bin/firecracker"},
+    ssh_user=d.ssh_user, firecracker=f"{nyc_dir}/bin/firecracker",
     _sudo=True,
 )
 server.shell(name="validate sudoers", commands=["sudo -n visudo -cf /etc/sudoers.d/nyc"])
@@ -177,11 +177,9 @@ node_unit = files.template(
     name="nyc-node.service",
     src=str(TEMPLATES / "nyc-node.service.j2"),
     dest="/etc/systemd/system/nyc-node.service", mode="644",
-    data={
-        "ssh_user": d.ssh_user, "node_folder": node_folder, "nyc_dir": nyc_dir, "uv": uv_path,
-        "exec_args": "--bootstrap" if d.role == "bootstrap" else f"--join {d.join_target}",
-        "vm_ttl_minutes": d.vm_ttl_minutes,
-    },
+    ssh_user=d.ssh_user, node_folder=node_folder, nyc_dir=nyc_dir, uv=uv_path,
+    exec_args="--bootstrap" if d.role == "bootstrap" else f"--join {d.join_target}",
+    vm_ttl_minutes=d.vm_ttl_minutes,
     _sudo=True,
 )
 systemd.service(
@@ -194,13 +192,13 @@ systemd.service(
 files.template(
     name="Caddyfile",
     src=str(TEMPLATES / "Caddyfile.j2"), dest=f"{node_folder}/Caddyfile",
-    data={"domain": d.domain, "node_host": d.node_host, "http_port": d.http_port},
+    domain=d.domain, node_host=d.node_host, http_port=d.http_port,
 )
 caddy_unit = files.template(
     name="nyc-caddy.service",
     src=str(TEMPLATES / "nyc-caddy.service.j2"),
     dest="/etc/systemd/system/nyc-caddy.service", mode="644",
-    data={"caddyfile": f"{node_folder}/Caddyfile"},
+    caddyfile=f"{node_folder}/Caddyfile",
     _sudo=True,
 )
 systemd.service(

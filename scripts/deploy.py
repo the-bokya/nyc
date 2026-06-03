@@ -128,15 +128,17 @@ def remote_curl(cluster: dict, node: dict, method: str, path: str, body: dict | 
 
 def wait_health(cluster: dict, node: dict, timeout: float = 120.0) -> None:
     deadline = time.monotonic() + timeout
+    last_err: str = ""
     while time.monotonic() < deadline:
         try:
             if remote_curl(cluster, node, "GET", "/health"):
                 print(f"    {node['name']} healthy")
                 return
-        except Exception:
-            pass
+            last_err = "empty response"
+        except Exception as exc:
+            last_err = str(exc)
         time.sleep(2.0)
-    raise RuntimeError(f"{node['name']} never became healthy")
+    raise RuntimeError(f"{node['name']} never became healthy (last error: {last_err})")
 
 
 def ensure_default_vpc(cluster: dict, boot: dict) -> None:
