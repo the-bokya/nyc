@@ -60,7 +60,9 @@ nyc/
 │   ├── stage.sh             # single-host: boot N nodes, run the e2e suite
 │   ├── preflight.py         # read-only SSH readiness probe for bare-metal nodes
 │   ├── deploy.py            # bare-metal orchestrator: up/down/status/ssh/overlay-check
-│   ├── provision.sh, teardown.sh   # per-node setup / reverse, run by deploy.py over ssh
+│   ├── inventory.py        # pyinfra inventory: cluster.toml -> hosts + host.data
+│   ├── provision.py, teardown.py  # pyinfra deploys: per-node setup / reverse, driven by deploy.py
+│   ├── templates/          # Jinja sudoers / systemd unit / Caddyfile artifacts
 │   └── cluster.toml.example # bare-metal inventory schema
 └── assets/               # populated by fetch_artifacts.sh
 ```

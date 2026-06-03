@@ -1,27 +1,30 @@
 #!/usr/bin/env python3
-"""nyc bare-metal deploy orchestrator — stdlib only (tomllib/subprocess/argparse).
+"""nyc bare-metal deploy orchestrator.
 
-Uploads + runs the bash provision.sh / teardown.sh on each node over
-`ssh -A -o StrictHostKeyChecking=accept-new`, bootstrap node first.
+Provisioning is pyinfra (`inventory.py` + `provision.py` / `teardown.py`); this
+script drives it and adds the app-level steps pyinfra doesn't model — health
+waits, the default VPC, the spawn smoke test, and the read-only operational
+commands.
 
-  deploy.py up     cluster.toml          # provision, create default VPC, smoke
-  deploy.py down   cluster.toml [--purge] # teardown (reverse + idempotent)
+  deploy.py up     cluster.toml          # pyinfra provision (bootstrap first) + smoke
+  deploy.py down   cluster.toml [--purge] # delete VMs via API, then pyinfra teardown
   deploy.py status cluster.toml          # health + node count
   deploy.py ssh    cluster.toml <vm_id>  # ssh into a VM via the host jump server
   deploy.py overlay-check cluster.toml <vpc_id>  # per-node VXLAN/FDB/NAT audit
 
-API calls (health, default VPC, smoke) run *on* a node via ssh -> localhost,
-so the control machine needs no private-network access. See scripts/spec.md.
+Run inside the nyc venv so `pyinfra` is on PATH:  uv run scripts/deploy.py up ...
+API calls (health, VPC, smoke, overlay probe) run *on* a node over ssh ->
+localhost, so the control machine needs no private-network access. See spec.md.
 """
 import argparse
-import base64
-import concurrent.futures
 import hashlib
 import ipaddress
 import json
+import os
 import shlex
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -46,11 +49,12 @@ printf 'ex=%s\nvni=%s\nlocal=%s\nmaster=%s\nfdb=%s\nbraddr=%s\nbrmac=%s\nipfwd=%
 '''
 
 
-def vni_for(vpc_id: str) -> int:  # mirrors nyc.client.network.overlay.vni_for
+# --- overlay name/id helpers (mirror nyc.client.network.overlay) ---
+def vni_for(vpc_id: str) -> int:
     return int.from_bytes(hashlib.sha256(vpc_id.encode()).digest()[:4], "big") % (2**24 - 1) + 1
 
 
-def anycast_mac(vpc_id: str) -> str:  # mirrors overlay.anycast_mac
+def anycast_mac(vpc_id: str) -> str:
     b = hashlib.sha256(vpc_id.encode()).digest()
     return "02:" + ":".join(f"{x:02x}" for x in b[:5])
 
@@ -59,6 +63,7 @@ def overlay_names(node_id: str, vpc_id: str) -> tuple[str, str]:
     return f"br-{node_id[:4]}-{vpc_id[:4]}", f"vx-{node_id[:4]}-{vpc_id[:4]}"
 
 
+# --- inventory ---
 def load(path: str) -> tuple[dict, list[dict]]:
     data = tomllib.loads(Path(path).read_text())
     if not data.get("nodes"):
@@ -86,49 +91,31 @@ def ssh_target(cluster: dict, node: dict) -> str:
     return f"{cluster.get('ssh_user', 'ubuntu')}@{host}"
 
 
-def shared_key(inventory: str) -> tuple[str, str]:
-    d = Path(inventory).resolve().parent / ".nyc-deploy"
+def keydir(inventory: str) -> Path:
+    return Path(inventory).resolve().parent / ".nyc-deploy"
+
+
+def ensure_keypair(inventory: str) -> None:
+    """Generate the shared VM keypair if absent (provision.py uploads it)."""
+    d = keydir(inventory)
     d.mkdir(exist_ok=True)
-    key, pub = d / "id_ed25519", d / "id_ed25519.pub"
+    key = d / "id_ed25519"
     if not key.exists():
         subprocess.run(["ssh-keygen", "-t", "ed25519", "-N", "", "-f", str(key), "-q"], check=True)
-    b64 = lambda p: base64.b64encode(p.read_bytes()).decode()
-    return b64(key), b64(pub)
 
 
-def node_env(cluster: dict, node: dict, nodes: list[dict], keys: tuple[str, str]) -> dict:
-    boot = bootstrap_of(nodes)
-    role = "bootstrap" if node.get("bootstrap") else "join"
-    return {
-        "REPO_URL": cluster["repo_url"], "REF": cluster.get("ref", "main"),
-        "REMOTE_DIR": cluster.get("remote_dir", "~/equator"),
-        "SSH_USER": cluster.get("ssh_user", "ubuntu"),
-        "NODE_NAME": node["name"], "NODE_HOST": node["host"],
-        "PUBLIC_HOST": node.get("public_host", ""), "DOMAIN": node.get("domain", ""),
-        "HTTP_PORT": cluster.get("http_port", 8000),
-        "RQLITE_HTTP_PORT": cluster.get("rqlite_http_port", 4001),
-        "RQLITE_RAFT_PORT": cluster.get("rqlite_raft_port", 4002),
-        "VPC_CIDR": cluster.get("vpc_cidr", "172.16.0.0/16"),
-        "DNS": cluster.get("dns", "1.1.1.1"),
-        "ROLE": role,
-        "JOIN_TARGET": f"{boot['host']}:{cluster.get('rqlite_raft_port', 4002)}",
-        "VM_KEY_B64": keys[0], "VM_PUB_B64": keys[1],
-        "VM_TTL_MINUTES": cluster.get("vm_ttl_minutes", 0),
-        "LVM_DEVICE": node.get("lvm_device", cluster.get("lvm_device", "")),
-        "LVM_VG": cluster.get("lvm_vg", "nyc"),
-        "LVM_THINPOOL": cluster.get("lvm_thinpool", "pool"),
-    }
+# --- pyinfra ---
+def _pyinfra(deploy: str, inventory: str, limit: list[str] | None = None, purge: bool = False) -> None:
+    env = {**os.environ, "NYC_CLUSTER": str(Path(inventory).resolve())}
+    if purge:
+        env["NYC_PURGE"] = "1"
+    cmd = ["pyinfra", "inventory.py", deploy] + (["--limit", ",".join(limit)] if limit else [])
+    print(f"--> pyinfra {deploy} ({','.join(limit) if limit else 'all'})")
+    if subprocess.run(cmd, cwd=HERE, env=env).returncode:
+        raise RuntimeError(f"pyinfra {deploy} failed")
 
 
-def run_script(cluster: dict, node: dict, env: dict, script: Path) -> None:
-    prefix = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in env.items())
-    cmd = SSH + [ssh_target(cluster, node), f"{prefix} bash -s"]
-    print(f"--> {node['name']}: {script.name}")
-    r = subprocess.run(cmd, input=script.read_text(), text=True)
-    if r.returncode:
-        raise RuntimeError(f"{script.name} failed on {node['name']} (exit {r.returncode})")
-
-
+# --- on-node API access (ssh -> the node's own localhost) ---
 def remote_curl(cluster: dict, node: dict, method: str, path: str, body: dict | None = None) -> dict:
     url = f"http://{node['host']}:{cluster.get('http_port', 8000)}{path}"
     inner = ["curl", "-fsS", "-X", method, url]
@@ -140,7 +127,6 @@ def remote_curl(cluster: dict, node: dict, method: str, path: str, body: dict | 
 
 
 def wait_health(cluster: dict, node: dict, timeout: float = 120.0) -> None:
-    import time
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -155,18 +141,16 @@ def wait_health(cluster: dict, node: dict, timeout: float = 120.0) -> None:
 
 def ensure_default_vpc(cluster: dict, boot: dict) -> None:
     cidr = cluster.get("vpc_cidr", "172.16.0.0/16")
-    existing = remote_curl(cluster, boot, "GET", "/vpcs")
-    if any(v.get("name") == "default" for v in existing):
+    if any(v.get("name") == "default" for v in remote_curl(cluster, boot, "GET", "/vpcs")):
         print("    default VPC already exists")
         return
     remote_curl(cluster, boot, "POST", "/vpcs", {"name": "default", "cidr": cidr})
     print(f"    created default VPC {cidr}")
 
 
-def smoke(cluster: dict, boot: dict, pub_b64: str) -> None:
-    pub = base64.b64decode(pub_b64).decode().strip()
-    vm = remote_curl(cluster, boot, "POST", "/vms/spawn",
-                     {"vm_name": "deploy-smoke", "ssh_key": pub})
+def smoke(cluster: dict, boot: dict, inventory: str) -> None:
+    pub = (keydir(inventory) / "id_ed25519.pub").read_text().strip()
+    vm = remote_curl(cluster, boot, "POST", "/vms/spawn", {"vm_name": "deploy-smoke", "ssh_key": pub})
     ok = vm.get("status") == "running"
     print(f"    smoke spawn: {vm.get('id')} status={vm.get('status')}")
     remote_curl(cluster, boot, "DELETE", f"/vms/{vm['id']}")
@@ -176,32 +160,27 @@ def smoke(cluster: dict, boot: dict, pub_b64: str) -> None:
         raise RuntimeError("smoke test VM did not reach running")
 
 
+# --- commands ---
 def cmd_up(cluster: dict, nodes: list[dict], inventory: str) -> int:
     validate(cluster, nodes)
-    keys = shared_key(inventory)
+    ensure_keypair(inventory)
     boot = bootstrap_of(nodes)
-    run_script(cluster, boot, node_env(cluster, boot, nodes, keys), HERE / "provision.sh")
+    _pyinfra("provision.py", inventory, limit=[boot["name"]])
     wait_health(cluster, boot)
     joiners = [n for n in nodes if not n.get("bootstrap")]
-    _parallel(lambda n: run_script(cluster, n, node_env(cluster, n, nodes, keys),
-                                   HERE / "provision.sh"), joiners)
-    for n in joiners:
-        wait_health(cluster, n)
+    if joiners:
+        _pyinfra("provision.py", inventory, limit=[n["name"] for n in joiners])
+        for n in joiners:
+            wait_health(cluster, n)
     ensure_default_vpc(cluster, boot)
-    smoke(cluster, boot, keys[1])
+    smoke(cluster, boot, inventory)
     print(f"\nUP: {len(nodes)} node(s) provisioned.")
     return 0
 
 
-def cmd_down(cluster: dict, nodes: list[dict], purge: bool) -> int:
+def cmd_down(cluster: dict, nodes: list[dict], inventory: str, purge: bool) -> int:
     _delete_all_vms(cluster, nodes)
-
-    def env_for(n: dict) -> dict:
-        return {"REMOTE_DIR": cluster.get("remote_dir", "~/equator"),
-                "SSH_USER": cluster.get("ssh_user", "ubuntu"), "PURGE": 1 if purge else 0,
-                "LVM_VG": cluster.get("lvm_vg", "nyc"),
-                "LVM_DEVICE": n.get("lvm_device", cluster.get("lvm_device", ""))}
-    _parallel(lambda n: run_script(cluster, n, env_for(n), HERE / "teardown.sh"), nodes)
+    _pyinfra("teardown.py", inventory, purge=purge)
     print(f"\nDOWN: {len(nodes)} node(s) torn down{' (purged)' if purge else ''}.")
     return 0
 
@@ -232,9 +211,7 @@ def cmd_ssh(cluster: dict, nodes: list[dict], inventory: str, vm_id: str) -> int
     host_node = by_id.get(vm["node_id"])
     if not host_node:
         sys.exit(f"could not resolve hosting node for vm {vm_id}")
-    jump = ssh_target(cluster, host_node)
-    key = Path(inventory).resolve().parent / ".nyc-deploy" / "id_ed25519"
-    argv = ["ssh", "-J", jump, "-i", str(key),
+    argv = ["ssh", "-J", ssh_target(cluster, host_node), "-i", str(keydir(inventory) / "id_ed25519"),
             "-o", "StrictHostKeyChecking=accept-new", f"root@{vm['ip']}"]
     print(f"--> {' '.join(argv)}")
     return subprocess.call(argv)
@@ -304,24 +281,17 @@ def _render_overlay(reg: dict, rows: list[tuple]) -> bool:
 
 
 def _delete_all_vms(cluster: dict, nodes: list[dict]) -> None:
+    boot = bootstrap_of(nodes)
     try:
-        vms = remote_curl(cluster, bootstrap_of(nodes), "GET", "/vms")
+        vms = remote_curl(cluster, boot, "GET", "/vms")
     except Exception:
         print("    cluster unreachable — skipping API VM cleanup")
         return
     for vm in vms:
         try:
-            remote_curl(cluster, bootstrap_of(nodes), "DELETE", f"/vms/{vm['id']}")
+            remote_curl(cluster, boot, "DELETE", f"/vms/{vm['id']}")
         except Exception:
             pass
-
-
-def _parallel(fn, items: list) -> None:
-    if not items:
-        return
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
-        for f in concurrent.futures.as_completed([ex.submit(fn, i) for i in items]):
-            f.result()
 
 
 def main() -> int:
@@ -335,7 +305,7 @@ def main() -> int:
     if a.action == "up":
         return cmd_up(cluster, nodes, a.inventory)
     if a.action == "down":
-        return cmd_down(cluster, nodes, a.purge)
+        return cmd_down(cluster, nodes, a.inventory, a.purge)
     if a.action == "ssh":
         if not a.target:
             ap.error("ssh requires a vm_id")

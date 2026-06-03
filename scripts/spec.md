@@ -1,17 +1,18 @@
 # scripts
 
 Artifact fetch, single-host staging, and bare-metal preflight + **deploy**
-(`deploy.py` + `provision.sh` + `teardown.sh`).
+(`deploy.py` driving the pyinfra `inventory.py` + `provision.py` / `teardown.py`).
 
 | File | What it does |
 |---|---|
 | `install_firecracker.sh` | Idempotently download the pinned firecracker binary into `bin/`. |
-| `fetch_artifacts.sh` | Idempotently fetch the kernel + rootfs into `assets/` and generate an ssh keypair. (Per-VM SSH/DNS/fstab are injected at boot by `vm.inject`; the shared key + resolv.conf are baked into the base rootfs by `provision.sh`.) |
+| `fetch_artifacts.sh` | Idempotently fetch the kernel + rootfs into `assets/` and generate an ssh keypair. (Per-VM SSH/DNS/fstab are injected at boot by `vm.inject`; the shared key + resolv.conf are baked into the base rootfs by `provision.py`.) |
 | `stage.sh [N] [--real] [--keep] [--no-tests]` | Single-host emulation: boot N dadar nodes in `./stage/`, run the e2e suite. `host` stays `127.0.0.1`, so the cross-node overlay isn't exercised here. `--real` builds each node a loopback-backed VG (sparse `pv.img` in its folder); on exit it kills firecracker first (so the LV devices close), then detaches the loops + removes those VGs, and a startup sweep reclaims any loops/VGs a prior SIGKILL'd run leaked. |
 | `preflight.py <cluster.toml>` | **Read-only** bare-metal readiness probe (below). |
-| `deploy.py {up,down,status,ssh,overlay-check} <cluster.toml> [--purge]` | Bare-metal orchestrator (below). |
-| `provision.sh` / `teardown.sh` | Idempotent per-node setup / reverse, run by `deploy.py` over `ssh -A`; env-driven. Regenerated from `deploy.prompt.md`. |
-| `deploy.prompt.md` | Reproduction prompt for `provision.sh`/`teardown.sh` + the literal sudoers/systemd/Caddyfile templates. |
+| `deploy.py {up,down,status,ssh,overlay-check} <cluster.toml> [--purge]` | Bare-metal orchestrator over the pyinfra deploys (below). |
+| `inventory.py` | pyinfra inventory: turns `cluster.toml` (path in `$NYC_CLUSTER`) into hosts + per-host `host.data`. |
+| `provision.py` / `teardown.py` | pyinfra deploys: idempotent per-node setup / reverse, driven by `deploy.py` over agent-forwarded ssh. |
+| `templates/` | Jinja artifacts rendered by `provision.py`: `sudoers.j2`, `nyc-node.service.j2`, `nyc-caddy.service.j2`, `Caddyfile.j2`. |
 | `cluster.toml.example` | Inventory schema for `preflight.py` / `deploy.py`. |
 
 **Locked choices:** delivery = `git clone` (recursive) at the inventory `ref`;
@@ -34,46 +35,57 @@ not contain any node `host`). Exit is non-zero if any node has a `FAIL`.
 
 ## deploy.py
 
-Stdlib-only (`tomllib`/`subprocess`/`argparse`/`concurrent.futures`): uploads +
-runs `provision.sh`/`teardown.sh` on each node over `ssh -A` (params as env on
-the ssh line). API calls (health, VPC, smoke) run **on a node via ssh → its own
+Thin orchestrator over the pyinfra deploys (`inventory.py` + `provision.py` /
+`teardown.py`). Run it inside the nyc venv so `pyinfra` is on `PATH`
+(`uv run scripts/deploy.py up cluster.toml`): it sets `$NYC_CLUSTER` and shells
+out to `pyinfra`, then adds the app-level steps pyinfra doesn't model. API calls
+(health, VPC, smoke, overlay probe) run **on a node via ssh → its own
 `localhost`**, so the control box needs no private-network access.
 
 - **`up`**: validate (one `bootstrap=true`; no CIDR overlap); generate-or-reuse
   a **shared VM keypair** at `<inventory_dir>/.nyc-deploy/` (one key ssh-jumps
-  into any VM); provision the bootstrap node first + wait `/health`, then joiners
-  in parallel; create the `default` VPC (idempotent); smoke (`spawn_vm` → running
-  → delete).
-- **`down`**: best-effort delete VMs via the API, then parallel `teardown.sh`.
-  `--purge` also removes packages + checkout.
+  into any VM); `pyinfra provision.py --limit <bootstrap>` + wait `/health`, then
+  `--limit <joiners>` + wait each; create the `default` VPC (idempotent); smoke
+  (`spawn_vm` → running → delete).
+- **`down`**: best-effort delete VMs via the API, then `pyinfra teardown.py`
+  (`NYC_PURGE=1` for `--purge`, which also removes packages + checkout + the VG).
 - **`status`**: per-node `/health` plus the cluster's `/nodes` count.
+- **`ssh` / `overlay-check`**: read-only operational commands (below).
 
-### provision.sh / teardown.sh
+### provision.py / teardown.py
 
-Per-node bash, env-driven, idempotent (check-then-act), `sudo -n`.
-**`provision.sh`** sets a node up end to end: apt (incl. `lvm2`) + `uv` + Caddy →
-fetch/checkout the repo at `REF` → `uv sync` → install firecracker + rqlited →
-fetch artifacts, distribute the shared key, bake key + resolv.conf into the base
-rootfs → `ip_forward` → sudoers (now also the LVM/device toolchain) → `dadar
-init` → write nyc's `lvm_*` keys into the node's `config.toml` (`LVM_DEVICE` is
-the one block device nyc owns; `LVM_VG`/`LVM_THINPOOL` name the VG/pool nyc
-creates on first start) → start `nyc-node.service` + `nyc-caddy.service`
-(per-node Caddyfile, automatic HTTPS). The VG/thin-pool/default-golden are built
-lazily at node startup by `client/volume/pool.ensure` (self-healing on reboot),
-not by `provision.sh`. **`teardown.sh`** reverses it by the anchored regexes in
-`teardown.sh` (name patterns: `../NETWORKING.md` §7): rm units → `ip netns/link
-del` matches → drop the `NYC-*` iptables chains → restore `ip_forward` → rm node
-folder + sudoers. `PURGE=1` also removes added packages (diffed against a `dpkg`
-snapshot from `up`) + the checkout **+ the LVM VG/PV on `LVM_DEVICE`** (a plain
-`down` leaves the VG, so VM data survives a re-`up`), so `up` after `down
---purge` rebuilds cleanly. **Reproduction-grade ordered
-steps + the literal sudoers / systemd / Caddyfile templates:
-[`deploy.prompt.md`](deploy.prompt.md).**
+pyinfra deploys, idempotent, driven by `deploy.py`; config arrives as `host.data`
+from `inventory.py`. Native operations (`apt.packages`, `server.sysctl`,
+`files.template`, `files.put`, `systemd.service`) carry their own idempotency;
+the inherently imperative steps (uv/Caddy installers, init-in-place repo sync,
+the `debugfs` rootfs bake, the anchored kernel/iptables teardown) are
+check-then-act `server.shell`. The literal unit/sudoers/Caddyfile artifacts live
+in `templates/*.j2`.
+
+**`provision.py`** sets a node up end to end: apt (incl. `lvm2`) + `uv` + Caddy →
+init-in-place checkout at `ref` (recursive submodules) → `uv sync` → install
+firecracker + rqlited → fetch artifacts, upload + bake the shared key +
+resolv.conf into the base rootfs → `ip_forward` → sudoers (now also the
+LVM/device toolchain) → `dadar init` → write nyc's `lvm_*` keys into the node's
+`config.toml` (`lvm_device` is the one block device nyc owns; `lvm_vg`/
+`lvm_thinpool` name the VG/pool nyc creates on first start) → enable+start
+`nyc-node.service` + `nyc-caddy.service` (per-node Caddyfile, automatic HTTPS;
+each restarts only when its unit template changed). The VG/thin-pool/
+default-golden are built lazily at node startup by `client/volume/pool.ensure`
+(self-healing on reboot), not by `provision.py`. **`teardown.py`** reverses it:
+stop+rm units → `ip netns/link del` the anchored name patterns
+(`../NETWORKING.md` §7) → drop the `NYC-*` iptables chains → restore `ip_forward`
+→ rm node folder + sudoers. `NYC_PURGE=1` (`down --purge`) also removes added
+packages (diffed against a `dpkg` snapshot from `up`) + the checkout **+ the LVM
+VG/PV on `lvm_device`** (a plain `down` leaves the VG, so VM data survives a
+re-`up`), so `up` after `down --purge` rebuilds cleanly. Pre-`up` snapshots live
+in `$HOME/.nyc` (outside the purge-able checkout) so teardown can always find
+them.
 
 ## VM TTL (auto-delete)
 
 Optional `vm_ttl_minutes` in `[cluster]` (0 / omitted = off). `deploy.py` passes
-it as `VM_TTL_MINUTES`; `provision.sh` bakes it into `nyc-node.service` as
+it through `host.data`; `provision.py` bakes it into `nyc-node.service` as
 `NYC_VM_TTL_MINUTES=<n>`, read by `reconciler/ttl_pass.py` (deletes this node's
 VMs older than the TTL — same path as `DELETE /vms`, auto volume not cascaded).
 

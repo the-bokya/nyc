@@ -87,7 +87,7 @@ Thin provisioning over-commits: the sum of LV virtual sizes can exceed the
 pool's physical size, so a full pool fails all writes and can corrupt guest
 filesystems. Today nothing watches the pool. Fix: enable
 `thin_pool_autoextend_threshold`/`autoextend_percent` (lvm.conf, via
-`provision.sh`) and/or refuse allocation past a data-/metadata-usage watermark
+`provision.py`) and/or refuse allocation past a data-/metadata-usage watermark
 in `routers/volumes.py`, plus a `dmeventd` alert.
 
 ## VXLAN ARP/ND suppression

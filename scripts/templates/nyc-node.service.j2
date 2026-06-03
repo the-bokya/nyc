@@ -1,0 +1,15 @@
+[Unit]
+Description=nyc dadar node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User={{ ssh_user }}
+WorkingDirectory={{ node_folder }}
+ExecStart=/usr/bin/env {{ uv }} run --project {{ nyc_dir }} dadar run {{ exec_args }}
+Restart=on-failure
+Environment=NYC_BACKEND=real
+Environment=NYC_VM_TTL_MINUTES={{ vm_ttl_minutes }}
+
+[Install]
+WantedBy=multi-user.target

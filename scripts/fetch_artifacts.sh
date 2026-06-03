@@ -29,7 +29,7 @@ if [[ ! -f "$KEY" ]]; then
 fi
 
 # Per-VM DNS/SSH/fstab are injected offline via debugfs at boot (nyc.client.vm.inject).
-# The shared key + resolv.conf are baked into this base rootfs by scripts/provision.sh
+# The shared key + resolv.conf are baked into this base rootfs by scripts/provision.py
 # (so plain `POST /vms` instances are reachable for the ssh-jump deliverable).
 
 echo "assets ready in assets/"

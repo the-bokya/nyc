@@ -16,7 +16,7 @@ IP) · §2 one VM on one host · §3 VXLAN across hosts (+ the FDB) · §4 the a
 gateway · §5 internet (forwarding + NAT) · §6 guest DNS · §7 naming & limits ·
 §8 teardown order · §9 command reference. The exact names/regexes and the
 deterministic VNI/MAC functions live in code (`client/network/`,
-`scripts/teardown.sh`); this doc is the *why*.
+`scripts/teardown.py`); this doc is the *why*.
 
 ---
 

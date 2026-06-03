@@ -1,0 +1,11 @@
+[Unit]
+Description=nyc caddy TLS front-end
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/caddy run --config {{ caddyfile }} --adapter caddyfile
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
