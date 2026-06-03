@@ -22,7 +22,7 @@ copy is ever needed for independence.
 | `create.py` | `run(vg, pool, name, size_mb)`, `from_snapshot(vg, snap_lv, name)` | New ext4 thin LV, or a writable clone of a snapshot. |
 | `delete.py` | `run(vg, name)` | `lvremove -f` (idempotent). |
 | `attach.py` | `run(vm_dir, device)`, `detach(vm_dir)` | Symlink the LV device into `vm_dir/data.ext4`. |
-| `snapshot.py` | `create(vg, vol_id, snap_id)`, `golden(vg, snap_id, gold_id)`, `remove(vg, lv)` | Read-only snapshot of a volume; read-only golden derived from a snapshot. |
+| `snapshot.py` | `create(vg, source_lv, snap_id)`, `golden(vg, snap_id, gold_id)`, `remove(vg, lv)` | Read-only snapshot of any source LV (a data volume's `data-*` or a VM's `rootfs-*`); read-only golden derived from a snapshot. |
 
 ## pool.ensure — the substrate
 

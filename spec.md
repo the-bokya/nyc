@@ -23,7 +23,7 @@ Three resources, all replicated through raft via dadar's ORM:
 | `vpcs`      | cluster-wide | `id`, `name` (UNIQUE), `cidr`, `created_at` |
 | `volumes`   | node-bound   | `id`, `node_id`, `name`, `size_mb`, `path` (LV device node), `status`, `created_at` |
 | `vms`       | node-bound   | `id`, `node_id`, `name`, `vpc_id`, `data_volume_id\|null`, `ip`, `ssh_pubkey_path`, `vcpu_count`, `mem_mib`, `status`, `created_at` |
-| `snapshots` | node-bound   | `id`, `node_id`, `name`, `role` (`snapshot`\|`golden`), `parent\|null`, `lv_name`, `size_mb`, `created_at` |
+| `snapshots` | node-bound   | `id`, `node_id`, `name`, `role` (`snapshot`\|`golden`), `disk` (`root`\|`data`), `parent\|null`, `lv_name`, `size_mb`, `created_at` |
 
 - `id`s are stringified UUIDv4; `node_id` is a UUID from dadar's `Nodes` table.
 - All VM storage is **LVM thin volumes** in a per-node volume group's thin pool:
@@ -43,10 +43,10 @@ Three resources, all replicated through raft via dadar's ORM:
 |---|---|---|---|
 | GET/POST/GET/DELETE | /vpcs[/{id}]    | POST `{name, cidr}`                       | global; DELETE 409 if any VM attached |
 | GET/POST/GET/PATCH/DELETE | /volumes[/{id}] | POST `{name, size_mb \| from_snapshot, node_id?}`; PATCH `{size_mb}` | node-bound thin LV; PATCH resizes; DELETE 409 if attached |
-| GET/POST/GET/DELETE | /snapshots[/{id}] | POST `{name, volume_id}`                | node-bound; read-only thin freeze of a volume |
-| GET/POST/GET/DELETE | /images[/{id}]    | POST `{name, from_snapshot}`            | node-bound; golden image (bootable rootfs source) |
+| GET/POST/GET/DELETE | /snapshots[/{id}] | POST `{name, volume_id\|vm_id}`        | node-bound; read-only thin freeze of a data volume (`disk=data`) or a VM's root (`disk=root`) |
+| GET/POST/GET/DELETE | /images[/{id}]    | POST `{name, from_snapshot}`            | node-bound; golden image (inherits the snapshot's `disk`) |
 | GET/POST/GET/DELETE | /vms[/{id}]     | POST `{name, vpc_id, data_volume_id?, node_id?}` | node-bound; full bring-up/teardown |
-| POST | /vms/spawn            | `{vm_name, ssh_key, size_mb?, vcpu_count?, mem_mib?, image?}` | turnkey: default VPC, auto volume, key injected; `image` clones a golden (pins to its node), else random node + `gold-default` |
+| POST | /vms/spawn            | `{vm_name, ssh_key, size_mb?, vcpu_count?, mem_mib?, root_image?, data_image?}` | turnkey: default VPC, key injected; `root_image` (must be `disk=root`) + `data_image` clone goldens and pin to their node; else random node + `gold-default` + fresh data ext4 |
 | POST | /vms/{id}/stop\|start\|reboot | —                                | proxied to owner; flips `vms.status` |
 | POST | /reconcile           | —                                                | force one reconciler pass on the receiving node |
 | GET  | /health, /nodes      | (inherited from dadar core)                      | |

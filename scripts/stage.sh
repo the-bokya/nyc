@@ -51,6 +51,29 @@ if [[ "$BACKEND" == "real" ]]; then
     fi
 fi
 
+# Reclaim loop devices + their VGs whose backing file is under THIS repo's
+# stage/ dir. Keyed off losetup (not the file), so it also reclaims a prior
+# SIGKILL'd run whose backing files are already gone (losetup shows "(deleted)").
+# Touches only loops pointing into our stage/ — nothing else on the box. Defined
+# here so both the startup sweep below and cleanup() (at EXIT) can call it.
+_purge_nyc_lvm() {
+    local stagedir="$PWD/stage"
+    sudo -n /usr/sbin/losetup -l -O NAME,BACK-FILE 2>/dev/null | while read -r loop back _; do
+        case "$back" in "$stagedir"/*) ;; *) continue ;; esac
+        for vg in $(sudo -n /usr/sbin/pvs --noheadings -o vg_name "$loop" 2>/dev/null); do
+            sudo -n /usr/sbin/vgchange -an "$vg" 2>/dev/null || true
+            sudo -n /usr/sbin/vgremove -f -y "$vg" 2>/dev/null || true
+        done
+        sudo -n /usr/sbin/pvremove -ff -y "$loop" 2>/dev/null || true
+        sudo -n /usr/sbin/losetup -d "$loop" 2>/dev/null || true
+    done
+}
+
+# A prior run killed with SIGKILL never ran its EXIT trap → leaked loops/VGs.
+# Reclaim ours before wiping stage/ (otherwise the backing files vanish and the
+# loops can never be matched again).
+[[ "$BACKEND" == "real" ]] && _purge_nyc_lvm
+
 rm -rf stage 2>/dev/null || true
 if [[ -e stage ]]; then
     echo "stage/ has files this user can't remove — likely root-owned leftovers" >&2
@@ -116,7 +139,16 @@ cleanup() {
     for pid in "${PIDS[@]}"; do
         kill "$pid" 2>/dev/null || true
     done
-    if [[ "$BACKEND" == "real" ]]; then _purge_nyc_kernel_state; _purge_nyc_lvm; fi
+    if [[ "$BACKEND" == "real" ]]; then
+        # firecracker runs as root (sudo) and holds the rootfs/data LV devices
+        # OPEN — until it exits, vgremove can't drop the VG. pgrep sees root
+        # procs unprivileged; `kill` is already in the sudoers set (pkill isn't).
+        local fcs; fcs="$(pgrep -f "$PWD/bin/firecracker" 2>/dev/null)" || true
+        [[ -n "$fcs" ]] && sudo -n /usr/bin/kill -TERM $fcs 2>/dev/null || true
+        sleep 1  # let firecracker exit and release the LV devices before vgremove
+        _purge_nyc_kernel_state
+        _purge_nyc_lvm
+    fi
     exit "$rc"
 }
 
@@ -126,23 +158,6 @@ _purge_nyc_kernel_state() {
     done
     for ns in $(sudo -n /usr/bin/ip netns list 2>/dev/null | awk '/^vm-[0-9a-f]{8}/ {print $1}'); do
         sudo -n /usr/bin/ip netns del "$ns" 2>/dev/null || true
-    done
-}
-
-# Each staged node ran in loopback mode: a sparse pv.img in its folder, attached
-# via losetup, with its own per-node VG. Remove only the VGs/loops backed by
-# THIS run's files, so nothing else on the dev box is touched.
-_purge_nyc_lvm() {
-    for img in stage/node*/.lvm/pv.img; do
-        [[ -f "$img" ]] || continue
-        local loop; loop="$(sudo -n /usr/sbin/losetup -j "$img" 2>/dev/null | cut -d: -f1)"
-        [[ -n "$loop" ]] || continue
-        for vg in $(sudo -n /usr/sbin/pvs --noheadings -o vg_name "$loop" 2>/dev/null); do
-            sudo -n /usr/sbin/vgchange -an "$vg" 2>/dev/null || true
-            sudo -n /usr/sbin/vgremove -f -y "$vg" 2>/dev/null || true
-        done
-        sudo -n /usr/sbin/pvremove -ff -y "$loop" 2>/dev/null || true
-        sudo -n /usr/sbin/losetup -d "$loop" 2>/dev/null || true
     done
 }
 

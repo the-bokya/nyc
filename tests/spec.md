@@ -14,7 +14,7 @@ rqlited in a temp dir on free ports (inherits the dadar pattern).
 | `test_client_overlay.py`  | `overlay.vni_for`/`anycast_mac` determinism; `vxlan` ensure + FDB reconcile |
 | `test_vpcs_crud.py`       | /vpcs full CRUD, validation, blocked-delete |
 | `test_volumes_crud.py`    | /volumes full CRUD (thin LVs), validation, blocked-delete |
-| `test_snapshots_crud.py`  | /snapshots + /images CRUD, spawn-from-golden, deletion independence, volume-from-snapshot, resize, orphan prune |
+| `test_snapshots_crud.py`  | /snapshots (data + VM-root) + /images CRUD, spawn `root_image`/`data_image`, root-must-be-bootable guard, same-node + different-node rejection, deletion independence, volume-from-snapshot, resize, orphan prune |
 | `test_vms_crud.py`        | /vms CRUD + stop/start/reboot, IP assignment, netns and bridge side-effects |
 | `test_spawn.py`           | /vms/spawn turnkey path: default VPC, auto volume, rootfs clone + inject |
 | `test_proxy.py`           | `_proxy._base_url` targets the registry `host`, not loopback |

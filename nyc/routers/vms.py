@@ -48,7 +48,8 @@ class SpawnIn(BaseModel):
     size_mb: int = 1024
     vcpu_count: int = 1
     mem_mib: int = 512
-    image: str | None = None  # golden image id to clone the rootfs from (default golden if omitted)
+    root_image: str | None = None  # golden (disk=root) to clone the rootfs from; default golden if omitted
+    data_image: str | None = None  # golden to clone the data disk from; a fresh empty ext4 if omitted
 
 
 @router.get("")
@@ -194,8 +195,8 @@ def _spec(row: dict, cidr: str, vol_path: Path | None, client: Client,
 
 def _spawn_local(body: SpawnIn, node_id: str, client: Client) -> dict:
     vpc = ensure_default_vpc(client)
-    rootfs_origin = _resolve_image(body.image, node_id, client)
-    vol = _auto_volume(body.vm_name, body.size_mb, node_id, client)
+    rootfs_origin = _resolve_root_image(body, node_id, client)
+    vol = _auto_volume(body, node_id, client)
     ip = pick_ip(vpc["cidr"], _used_ips(vpc["id"], client))
     row = _spawn_row(body, node_id, vpc["id"], ip, vol["id"])
     Vms(client).docs.insert(row)
@@ -205,20 +206,24 @@ def _spawn_local(body: SpawnIn, node_id: str, client: Client) -> dict:
 
 
 def _target_node(body: SpawnIn, client: Client) -> str:
-    """An image pins placement to its owner node (clone is node-local today)."""
-    if body.image:
-        return _image_or_400(body.image, client)["node_id"]
-    return _random_node(client)
+    """Images pin placement to their owner node (clone is node-local today); if
+    root_image and data_image disagree, spawn is impossible."""
+    ids = [i for i in (body.root_image, body.data_image) if i]
+    nodes = {_image_or_400(i, client)["node_id"] for i in ids}
+    if len(nodes) > 1:
+        raise HTTPException(409, "root_image and data_image are on different nodes")
+    return nodes.pop() if nodes else _random_node(client)
 
 
-def _resolve_image(image_id: str | None, node_id: str, client: Client) -> str:
-    """Golden LV to clone the rootfs from. Verify it lives on this node — a
-    cross-node clone is not supported yet (see FUTURE.md: image registry)."""
-    if not image_id:
+def _resolve_root_image(body: SpawnIn, node_id: str, client: Client) -> str:
+    """Golden LV to clone the rootfs from. Must be a root-disk image, and must
+    live on this node (cross-node clone is future work — FUTURE.md)."""
+    if not body.root_image:
         return GOLD_DEFAULT
-    img = _image_or_400(image_id, client)
-    if img["node_id"] != node_id:
-        raise HTTPException(409, "image is on another node (cross-node clone not yet supported)")
+    img = _image_or_400(body.root_image, client)
+    if img["disk"] != "root":
+        raise HTTPException(400, "root_image must be a root-disk image (it boots as the VM's root)")
+    _same_node_or_409(img, node_id)
     return img["lv_name"]
 
 
@@ -229,6 +234,11 @@ def _image_or_400(image_id: str, client: Client) -> dict:
     return img.__dict__
 
 
+def _same_node_or_409(img: dict, node_id: str) -> None:
+    if img["node_id"] != node_id:
+        raise HTTPException(409, "image is on another node (cross-node clone not yet supported)")
+
+
 def _random_node(client: Client) -> str:
     rows = Nodes(client).docs.get_all()
     if not rows:
@@ -236,15 +246,23 @@ def _random_node(client: Client) -> str:
     return random.choice(rows).__dict__["node_id"]
 
 
-def _auto_volume(vm_name: str, size_mb: int, node_id: str, client: Client) -> dict:
+def _auto_volume(body: SpawnIn, node_id: str, client: Client) -> dict:
     vol_id = str(uuid.uuid4())
-    vg = volume_vg(node_id)
-    dev = vol_create.run(vg, lvm().thinpool, names.data(vol_id), size_mb)
-    row = {"id": vol_id, "node_id": node_id, "name": f"{vm_name}-data", "size_mb": size_mb,
+    vg, name = volume_vg(node_id), names.data(vol_id)
+    dev, size_mb = _provision_data(body, vg, name, node_id, client)
+    row = {"id": vol_id, "node_id": node_id, "name": f"{body.vm_name}-data", "size_mb": size_mb,
            "path": dev, "status": "ready",
            "created_at": datetime.now(timezone.utc).isoformat()}
     Volumes(client).docs.insert(row)
     return row
+
+
+def _provision_data(body: SpawnIn, vg: str, name: str, node_id: str, client: Client) -> tuple[str, int]:
+    if not body.data_image:  # fresh empty ext4
+        return vol_create.run(vg, lvm().thinpool, name, body.size_mb), body.size_mb
+    img = _image_or_400(body.data_image, client)
+    _same_node_or_409(img, node_id)
+    return vol_create.from_snapshot(vg, img["lv_name"], name), img["size_mb"]
 
 
 def _spawn_row(body: SpawnIn, node_id: str, vpc_id: str, ip: str, vol_id: str) -> dict:

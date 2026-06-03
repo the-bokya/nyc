@@ -16,7 +16,7 @@ from nyc.client.volume import names
 from nyc.client.volume import snapshot as snap_action
 from nyc.config import volume_vg
 from nyc.routers._proxy import forward
-from nyc.tables import Snapshots, Volumes
+from nyc.tables import Snapshots, Volumes, Vms
 
 snapshots = APIRouter(prefix="/snapshots")
 images = APIRouter(prefix="/images")
@@ -24,7 +24,8 @@ images = APIRouter(prefix="/images")
 
 class SnapshotIn(BaseModel):
     name: str
-    volume_id: str
+    volume_id: str | None = None  # snapshot a data volume (disk=data)
+    vm_id: str | None = None      # snapshot a VM's root disk (disk=root)
 
 
 class ImageIn(BaseModel):
@@ -44,13 +45,10 @@ def list_snapshots(client: Client = Depends(get_client)) -> list[dict]:
 @snapshots.post("", status_code=201)
 def create_snapshot(body: SnapshotIn, client: Client = Depends(get_client),
                     node_id: str = Depends(get_node_id)) -> dict:
-    vol = Volumes(client).docs.get(where={"id": body.volume_id})
-    if vol is None:
-        raise HTTPException(400, "unknown volume_id")
-    owner = vol.__dict__["node_id"]
-    if owner != node_id:
-        return forward(client, owner, "POST", "/snapshots", json=body.model_dump())
-    return _create_snapshot_local(body, vol.__dict__, owner, client)
+    src = _resolve_source(body, client)
+    if src["node_id"] != node_id:
+        return forward(client, src["node_id"], "POST", "/snapshots", json=body.model_dump())
+    return _create_snapshot_local(body, src, client)
 
 
 @snapshots.get("/{snapshot_id}")
@@ -92,12 +90,31 @@ def delete_image(image_id: str, client: Client = Depends(get_client),
     _delete(image_id, "golden", "/images", client, node_id)
 
 
-def _create_snapshot_local(body: SnapshotIn, vol: dict, node_id: str, client: Client) -> dict:
+def _resolve_source(body: SnapshotIn, client: Client) -> dict:
+    """The thing being snapshotted: a data volume's LV, or a VM's root LV."""
+    if bool(body.volume_id) == bool(body.vm_id):
+        raise HTTPException(400, "give exactly one of volume_id or vm_id")
+    if body.volume_id:
+        vol = Volumes(client).docs.get(where={"id": body.volume_id})
+        if vol is None:
+            raise HTTPException(400, "unknown volume_id")
+        v = vol.__dict__
+        return {"node_id": v["node_id"], "parent": v["id"],
+                "source_lv": names.data(v["id"]), "size_mb": v["size_mb"], "disk": "data"}
+    vm = Vms(client).docs.get(where={"id": body.vm_id})
+    if vm is None:
+        raise HTTPException(400, "unknown vm_id")
+    v = vm.__dict__
+    return {"node_id": v["node_id"], "parent": v["id"],
+            "source_lv": names.rootfs(v["id"]), "size_mb": 0, "disk": "root"}
+
+
+def _create_snapshot_local(body: SnapshotIn, src: dict, client: Client) -> dict:
     snap_id = str(uuid.uuid4())
-    snap_action.create(volume_vg(node_id), body.volume_id, snap_id)
-    row = {"id": snap_id, "node_id": node_id, "name": body.name, "role": "snapshot",
-           "parent": body.volume_id, "lv_name": names.snap(snap_id),
-           "size_mb": vol["size_mb"], "created_at": _now()}
+    snap_action.create(volume_vg(src["node_id"]), src["source_lv"], snap_id)
+    row = {"id": snap_id, "node_id": src["node_id"], "name": body.name, "role": "snapshot",
+           "disk": src["disk"], "parent": src["parent"], "lv_name": names.snap(snap_id),
+           "size_mb": src["size_mb"], "created_at": _now()}
     Snapshots(client).docs.insert(row)
     return row
 
@@ -106,7 +123,7 @@ def _create_image_local(body: ImageIn, snap: dict, node_id: str, client: Client)
     gold_id = str(uuid.uuid4())
     snap_action.golden(volume_vg(node_id), snap["id"], gold_id)
     row = {"id": gold_id, "node_id": node_id, "name": body.name, "role": "golden",
-           "parent": snap["id"], "lv_name": names.gold(gold_id),
+           "disk": snap["disk"], "parent": snap["id"], "lv_name": names.gold(gold_id),
            "size_mb": snap["size_mb"], "created_at": _now()}
     Snapshots(client).docs.insert(row)
     return row

@@ -7,7 +7,7 @@ Artifact fetch, single-host staging, and bare-metal preflight + **deploy**
 |---|---|
 | `install_firecracker.sh` | Idempotently download the pinned firecracker binary into `bin/`. |
 | `fetch_artifacts.sh` | Idempotently fetch the kernel + rootfs into `assets/` and generate an ssh keypair. (Per-VM SSH/DNS/fstab are injected at boot by `vm.inject`; the shared key + resolv.conf are baked into the base rootfs by `provision.sh`.) |
-| `stage.sh [N] [--real] [--keep] [--no-tests]` | Single-host emulation: boot N dadar nodes in `./stage/`, run the e2e suite. `host` stays `127.0.0.1`, so the cross-node overlay isn't exercised here. `--real` builds each node a loopback-backed VG (sparse `pv.img` in its folder); cleanup detaches the loops + removes those VGs. |
+| `stage.sh [N] [--real] [--keep] [--no-tests]` | Single-host emulation: boot N dadar nodes in `./stage/`, run the e2e suite. `host` stays `127.0.0.1`, so the cross-node overlay isn't exercised here. `--real` builds each node a loopback-backed VG (sparse `pv.img` in its folder); on exit it kills firecracker first (so the LV devices close), then detaches the loops + removes those VGs, and a startup sweep reclaims any loops/VGs a prior SIGKILL'd run leaked. |
 | `preflight.py <cluster.toml>` | **Read-only** bare-metal readiness probe (below). |
 | `deploy.py {up,down,status,ssh,overlay-check} <cluster.toml> [--purge]` | Bare-metal orchestrator (below). |
 | `provision.sh` / `teardown.sh` | Idempotent per-node setup / reverse, run by `deploy.py` over `ssh -A`; env-driven. Regenerated from `deploy.prompt.md`. |

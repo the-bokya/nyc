@@ -8,7 +8,7 @@ Four ORM models, one file each. Each subclasses `dadar.orm.ORM` and declares
 | `vpcs.py`      | private network CIDR ranges     | global (no `node_id`) |
 | `volumes.py`   | per-VM data volumes (thin LVs)  | node-bound |
 | `vms.py`       | running microVMs                | node-bound |
-| `snapshots.py` | read-only thin images: `role` ∈ {snapshot, golden} | node-bound |
+| `snapshots.py` | read-only thin images: `role` ∈ {snapshot, golden}, `disk` ∈ {root, data} | node-bound |
 
 `ALL` in `__init__.py` is the list registered with `DadarApp(tables=...)`.
 
@@ -35,9 +35,13 @@ Schema choices:
 - `volumes.path` holds the LV **device node** `/dev/<vg>/<lv>` (the LV name is
   `data-<id>`, derived, not stored). The volume is a thin LV; `size_mb` is its
   thin *virtual* size — physical usage grows on write.
-- `snapshots` covers both plain snapshots and golden images, split by `role`.
-  `parent` is the id it derived from (a volume for a snapshot, a snapshot for a
-  golden; null for the substrate's `gold-default`). `lv_name` is the backing LV.
-  Snapshot/golden `name` uniqueness, like other node-bound names, is enforced (or
-  not) by the router, not SQL. Thin independence means **no cascade**: deleting a
-  volume with snapshots, or a golden with VM clones, is allowed and harmless.
+- `snapshots` has two independent axes: `role` ∈ {snapshot, golden} (a
+  point-in-time freeze vs a cloneable image) and `disk` ∈ {root, data} (a VM
+  rootfs lineage vs a data volume). `disk` is set from the snapshot source — a
+  `volume_id` gives `data`, a `vm_id` gives `root` (snapshots the VM's
+  `rootfs-<id>` LV) — and a golden inherits it. Only a `disk=root` image is a
+  valid boot source, which the spawn router enforces (`root_image` → 400 if not
+  root). `parent` is the id it derived from (volume/VM for a snapshot, snapshot
+  for a golden; null for `gold-default`). `lv_name` is the backing LV. Names are
+  router-enforced, not SQL. Thin independence means **no cascade**: deleting a
+  volume/VM with snapshots, or a golden with clones, is allowed and harmless.

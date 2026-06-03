@@ -64,15 +64,17 @@ or full node. Fix: filter by recent liveness and bias by current VM/volume load.
 ## Cross-node golden images (clone is node-local today)
 
 Snapshots/goldens are node-local thin LVs (device-mapper objects); LVM has no
-native cross-node send/receive. So `POST /vms/spawn {image}` pins to the
-image's owner node and verifies same-node (`routers/vms.py:_resolve_image`,
-409 otherwise). To spawn from *any* node's golden, the way forward is an
+native cross-node send/receive. So `POST /vms/spawn {root_image, data_image}`
+pins to the image's owner node and verifies same-node
+(`routers/vms.py:_resolve_root_image` / `_provision_data`, 409 otherwise). To
+spawn from *any* node's golden, the way forward is an
 **image registry**: treat goldens as immutable, content-addressed artifacts,
 publish them (sparse/compressed) to a shared blob store (MinIO/S3, or a dadar
 blob endpoint), and have a node pull + import a golden into its local thin pool
 on demand, caching by content hash — exactly how container images distribute.
 The API already names goldens cluster-wide, so this needs no contract change:
-`spawn {image}` becomes pull-on-demand instead of same-node-only. A heavier
+`spawn {root_image, data_image}` becomes pull-on-demand instead of
+same-node-only. A heavier
 alternative is a Ceph RBD-backed pool (native cross-node CoW clone), which
 trades the per-node single-device model for a distributed-storage dependency.
 A local full *copy* of a golden helps neither problem — blocks must stream over

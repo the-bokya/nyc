@@ -9,7 +9,7 @@ of VMs, and they all share one connected transit map (the raft cluster).
 
 - Per-node Firecracker microVMs with isolated `/dev/net/tun` taps in Linux network namespaces.
 - Cluster-wide VPCs (CIDR-scoped private networks). VMs in the same VPC reach each other across nodes over a per-VPC VXLAN overlay; the VPC bridge is an anycast gateway, so VMs also get internet access (NAT) through their local node.
-- **LVM thin storage**: each node owns one block device as a thin pool. A VM's writable rootfs is a thin **clone of a golden image** (configured offline with `debugfs` — ssh key, DNS, fstab — never a full copy), and its data disk is a thin LV. Declarative **snapshot + golden-image** APIs let you freeze a volume, promote it to a bootable image, and spawn from it; thin snapshots are independent, so deleting one never breaks the VMs cloned from it.
+- **LVM thin storage**: each node owns one block device as a thin pool. A VM's writable rootfs is a thin **clone of a golden image** (configured offline with `debugfs` — ssh key, DNS, fstab — never a full copy), and its data disk is a thin LV. Declarative **snapshot + golden-image** APIs are generic over root and data disks: freeze a data volume *or* a VM's root, promote it to an image, then `spawn {root_image, data_image}` clones both for near-instant, fully-baked deploys. Thin snapshots are independent, so deleting one never breaks the VMs cloned from it.
 - DB-is-source-of-truth: a background reconciler kills orphan VMs/taps/volumes/snapshots, reaps TTL-expired VMs, and re-syncs each VPC's VXLAN flood list as nodes join/leave. (Recreating missing resources is not yet done — see [`FUTURE.md`](FUTURE.md).)
 
 The cross-node networking is documented ground-up in [`NETWORKING.md`](NETWORKING.md).

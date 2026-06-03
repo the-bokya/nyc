@@ -8,9 +8,9 @@ cloned from it (the pool refcounts shared blocks).
 from nyc.client.volume import lv, names
 
 
-def create(vg: str, source_vol_id: str, snap_id: str) -> str:
-    """Read-only snapshot of a data volume."""
-    return lv.snapshot(vg, names.data(source_vol_id), names.snap(snap_id), readonly=True)
+def create(vg: str, source_lv: str, snap_id: str) -> str:
+    """Read-only snapshot of any source LV (a data volume's or a VM's rootfs)."""
+    return lv.snapshot(vg, source_lv, names.snap(snap_id), readonly=True)
 
 
 def golden(vg: str, snap_id: str, gold_id: str) -> str:
