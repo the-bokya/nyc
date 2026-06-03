@@ -28,18 +28,17 @@ def test_nat_attach_dnat_rule():
 
 
 def test_nat_attach_snat_before_masquerade():
-    """SNAT for the VM must appear before the general MASQUERADE in NYC-POSTROUTING."""
-    # First create the MASQUERADE rule (as network/nat.ensure does)
+    """SNAT (scoped to inbound replies) must appear before the general MASQUERADE."""
     from nyc.client.network import nat as net_nat
     net_nat.ensure("10.0.0.0/24")
 
     pubip_nat.attach("1.2.3.4", "10.0.0.5")
     rules = STATE["iptables"]["nat"]["rules"].get("NYC-POSTROUTING", [])
-    snat = ("-s", "10.0.0.5", "-j", "SNAT", "--to-source", "1.2.3.4")
+    snat = ("-s", "10.0.0.5", "-m", "conntrack", "--ctorigdst", "1.2.3.4",
+            "-j", "SNAT", "--to-source", "1.2.3.4")
     masq = ("-s", "10.0.0.0/24", "!", "-d", "10.0.0.0/24", "-j", "MASQUERADE")
     assert snat in rules
     assert masq in rules
-    # SNAT must come before MASQUERADE (it was inserted at position 0)
     assert rules.index(snat) < rules.index(masq)
 
 
@@ -57,4 +56,5 @@ def test_nat_detach_removes_rules():
     pre_rules = STATE["iptables"]["nat"]["rules"].get("NYC-PREROUTING", [])
     post_rules = STATE["iptables"]["nat"]["rules"].get("NYC-POSTROUTING", [])
     assert ("-d", "1.2.3.4", "-j", "DNAT", "--to-destination", "10.0.0.5") not in pre_rules
-    assert ("-s", "10.0.0.5", "-j", "SNAT", "--to-source", "1.2.3.4") not in post_rules
+    assert ("-s", "10.0.0.5", "-m", "conntrack", "--ctorigdst", "1.2.3.4",
+            "-j", "SNAT", "--to-source", "1.2.3.4") not in post_rules

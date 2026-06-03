@@ -49,7 +49,8 @@ def test_nat_rules_created(http, vm):
     pre_rules = STATE["iptables"]["nat"]["rules"].get("NYC-PREROUTING", [])
     post_rules = STATE["iptables"]["nat"]["rules"].get("NYC-POSTROUTING", [])
     assert ("-d", address, "-j", "DNAT", "--to-destination", vm_ip) in pre_rules
-    assert ("-s", vm_ip, "-j", "SNAT", "--to-source", address) in post_rules
+    assert ("-s", vm_ip, "-m", "conntrack", "--ctorigdst", address,
+            "-j", "SNAT", "--to-source", address) in post_rules
 
 
 def test_attach_unknown_vm(http):
