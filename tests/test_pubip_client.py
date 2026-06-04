@@ -1,60 +1,105 @@
-"""Unit tests for pubip/host.py + pubip/nat.py using the fake backend."""
-from nyc.client.privops_fake import STATE
-from nyc.client.pubip import host as pubip_host
-from nyc.client.pubip import nat as pubip_nat
+"""Unit tests for client/pubip/pool.py and the L2 wiring in vm_up."""
+import os
+
+import pytest
+
+os.environ.setdefault("NYC_PUBLIC_IPS", "203.0.113.10|de:ad:be:ef:00:01,203.0.113.11|de:ad:be:ef:00:02")
+os.environ.setdefault("NYC_PUBLIC_IFACE", "ens3")
+os.environ.setdefault("NYC_PUBLIC_BRIDGE", "pub0")
+os.environ.setdefault("NYC_PUBIP_GATEWAY", "62.210.0.1")
+
+from nyc.client.pubip import pool as pubip_pool
+from nyc.config import pubip as pubip_cfg, PubIpEntry, PubipConfig
 
 
-def test_bind_adds_address():
-    pubip_host.bind("1.2.3.4", "eth0")
-    assert "1.2.3.4/32" in STATE["addrs"].get("eth0", [])
+def _cfg(*extra_ips):
+    ips = [
+        PubIpEntry(address="203.0.113.10", mac="de:ad:be:ef:00:01"),
+        PubIpEntry(address="203.0.113.11", mac="de:ad:be:ef:00:02"),
+    ] + list(extra_ips)
+    return PubipConfig(iface="ens3", ips=ips, gateway="62.210.0.1", bridge="pub0")
 
 
-def test_bind_idempotent():
-    pubip_host.bind("1.2.3.4", "eth0")
-    pubip_host.bind("1.2.3.4", "eth0")
-    assert STATE["addrs"]["eth0"].count("1.2.3.4/32") == 1
+def test_acquire_returns_first_free():
+    cfg = _cfg()
+    addr, gw, mac, prefix = pubip_pool.acquire(cfg, set())
+    assert addr == "203.0.113.10"
+    assert mac == "de:ad:be:ef:00:01"
+    assert prefix == "32"
+    assert gw == "62.210.0.1"
 
 
-def test_unbind_removes_address():
-    pubip_host.bind("1.2.3.4", "eth0")
-    pubip_host.unbind("1.2.3.4", "eth0")
-    assert "1.2.3.4/32" not in STATE["addrs"].get("eth0", [])
+def test_acquire_skips_used():
+    cfg = _cfg()
+    addr, _gw, mac, _prefix = pubip_pool.acquire(cfg, {"203.0.113.10"})
+    assert addr == "203.0.113.11"
+    assert mac == "de:ad:be:ef:00:02"
 
 
-def test_nat_attach_dnat_rule():
-    pubip_nat.attach("1.2.3.4", "10.0.0.5")
-    rules = STATE["iptables"]["nat"]["rules"].get("NYC-PREROUTING", [])
-    assert ("-d", "1.2.3.4", "-j", "DNAT", "--to-destination", "10.0.0.5") in rules
+def test_acquire_raises_when_exhausted():
+    cfg = _cfg()
+    with pytest.raises(RuntimeError, match="no free public IPs"):
+        pubip_pool.acquire(cfg, {"203.0.113.10", "203.0.113.11"})
 
 
-def test_nat_attach_snat_before_masquerade():
-    """SNAT (scoped to inbound replies) must appear before the general MASQUERADE."""
-    from nyc.client.network import nat as net_nat
-    net_nat.ensure("10.0.0.0/24")
-
-    pubip_nat.attach("1.2.3.4", "10.0.0.5")
-    rules = STATE["iptables"]["nat"]["rules"].get("NYC-POSTROUTING", [])
-    snat = ("-s", "10.0.0.5", "-m", "conntrack", "--ctorigdst", "1.2.3.4",
-            "-j", "SNAT", "--to-source", "1.2.3.4")
-    masq = ("-s", "10.0.0.0/24", "!", "-d", "10.0.0.0/24", "-j", "MASQUERADE")
-    assert snat in rules
-    assert masq in rules
-    assert rules.index(snat) < rules.index(masq)
+def test_release_is_noop():
+    cfg = _cfg()
+    pubip_pool.release(cfg, "203.0.113.10")  # must not raise
 
 
-def test_nat_attach_idempotent():
-    pubip_nat.attach("1.2.3.4", "10.0.0.5")
-    pubip_nat.attach("1.2.3.4", "10.0.0.5")
-    rules = STATE["iptables"]["nat"]["rules"].get("NYC-PREROUTING", [])
-    dnat = ("-d", "1.2.3.4", "-j", "DNAT", "--to-destination", "10.0.0.5")
-    assert rules.count(dnat) == 1
+def test_config_parses_env_csv():
+    cfg = pubip_cfg()
+    addrs = [e.address for e in cfg.ips]
+    macs = [e.mac for e in cfg.ips]
+    assert "203.0.113.10" in addrs
+    assert "de:ad:be:ef:00:01" in macs
+    assert cfg.bridge == "pub0"
+    assert cfg.gateway == "62.210.0.1"
 
 
-def test_nat_detach_removes_rules():
-    pubip_nat.attach("1.2.3.4", "10.0.0.5")
-    pubip_nat.detach("1.2.3.4", "10.0.0.5")
-    pre_rules = STATE["iptables"]["nat"]["rules"].get("NYC-PREROUTING", [])
-    post_rules = STATE["iptables"]["nat"]["rules"].get("NYC-POSTROUTING", [])
-    assert ("-d", "1.2.3.4", "-j", "DNAT", "--to-destination", "10.0.0.5") not in pre_rules
-    assert ("-s", "10.0.0.5", "-m", "conntrack", "--ctorigdst", "1.2.3.4",
-            "-j", "SNAT", "--to-source", "1.2.3.4") not in post_rules
+def test_wire_public_ip_enslaves_pvh_to_pub0(http, node):
+    """After attaching a public IP, pvh-* must be enslaved to pub0."""
+    from nyc.client.privops_fake import STATE
+
+    r = http.post("/vpcs", json={"name": "net", "cidr": "10.9.0.0/24"})
+    vpc_id = r.json()["id"]
+    vm = http.post("/vms", json={"name": "pv", "vpc_id": vpc_id}).json()
+    vm_id = vm["id"]
+
+    r = http.post(f"/vms/{vm_id}/public-ip")
+    assert r.status_code == 201
+
+    pvh = f"pvh-{vm_id[:8]}"
+    assert pvh in STATE["links"], f"pvh link {pvh} not created"
+    assert STATE["links"][pvh].get("master") == "pub0"
+
+
+def test_wire_public_ip_creates_tap1(http, node):
+    """After attaching, tap1 must exist in the VM's netns."""
+    from nyc.client.privops_fake import STATE
+
+    r = http.post("/vpcs", json={"name": "net2", "cidr": "10.10.0.0/24"})
+    vpc_id = r.json()["id"]
+    vm = http.post("/vms", json={"name": "pv2", "vpc_id": vpc_id}).json()
+    vm_id = vm["id"]
+
+    http.post(f"/vms/{vm_id}/public-ip")
+
+    assert "tap1" in STATE["links"]
+
+
+def test_wire_public_ip_reruns_inject(http, node):
+    """Attaching a public IP recreates the VM — debugfs must be called twice
+    (initial spawn + recreate), proving inject ran with the public_ip arg."""
+    from nyc.client.privops_fake import STATE
+
+    r = http.post("/vpcs", json={"name": "net3", "cidr": "10.11.0.0/24"})
+    vpc_id = r.json()["id"]
+    vm = http.post("/vms", json={"name": "pv3", "vpc_id": vpc_id}).json()
+    vm_id = vm["id"]
+
+    http.post(f"/vms/{vm_id}/public-ip")
+
+    # Two debugfs calls for this VM's rootfs: initial spawn + recreate after attach
+    calls = [argv for argv in STATE["debugfs"] if argv[-1].endswith(f"{vm_id}/rootfs.ext4")]
+    assert len(calls) >= 2, f"expected ≥2 debugfs calls (initial+recreate), got {len(calls)}"

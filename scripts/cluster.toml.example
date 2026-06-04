@@ -15,7 +15,7 @@ http_port  = 8000
 rqlite_http_port = 4001
 rqlite_raft_port = 4002
 vm_domain  = "example.com"                            # VM routing root domain; operator points *.example.com to the proxy VM public IP
-pubip_provider = "scaleway"                           # default public-IP provider (scaleway|static)
+public_bridge = "pub0"                                # bridge over the public NIC (created once at provision)
 
 # One node must have bootstrap = true; the rest join it.
 # host        = private/underlay IP (raft + cross-node proxy + VXLAN endpoints)
@@ -26,6 +26,13 @@ pubip_provider = "scaleway"                           # default public-IP provid
 #               device names differ). nyc runs pvcreate/vgcreate/thin-pool on it at startup,
 #               only when the VG is absent and the device is empty (NYC_LVM_FORCE=1 overrides).
 #               Omit to fall back to a loopback file (dev only).
+#
+# Public IP setup (macvtap-style L2, no DNAT/SNAT):
+#   Each VM that needs a public IP gets a second NIC (eth1) bridged directly onto pub0.
+#   pub0 is a Linux bridge over public_iface, created once at provision.
+#   Each public IP entry carries the provider-registered MAC — the provider's L2 anti-spoof
+#   accepts frames only from the registered MAC, so the MAC is mandatory.
+#   public_host_cidr = the host's own IP on the public NIC (moved onto pub0 at provision).
 [[nodes]]
 name = "n1"
 host = "10.0.0.11"
@@ -33,11 +40,15 @@ public_host = "203.0.113.1"
 domain = "n1.example.com"
 lvm_device = "/dev/nvme1n1"
 bootstrap = true
-# Public IP pool for this node (IPs already attached to the Elastic Metal server at Scaleway).
-# nyc binds each to the host iface and does 1:1 DNAT/SNAT to route internet traffic to a VM.
-public_iface   = "ens3"
-public_ips     = ["203.0.113.10", "203.0.113.11"]
-pubip_gateway  = "62.210.0.1"                          # Scaleway default gateway for flexible IPs
+public_iface      = "ens3"
+public_host_cidr  = "203.0.113.1/28"           # host's own IP on ens3 — moved to pub0
+pubip_gateway     = "62.210.0.1"               # Scaleway default gateway for flexible IPs
+[[nodes.public_ips]]
+address = "203.0.113.10"
+mac     = "de:ad:be:ef:00:01"
+[[nodes.public_ips]]
+address = "203.0.113.11"
+mac     = "de:ad:be:ef:00:02"
 
 [[nodes]]
 name = "n2"
@@ -45,6 +56,9 @@ host = "10.0.0.12"
 public_host = "203.0.113.2"
 domain = "n2.example.com"
 lvm_device = "/dev/nvme1n1"
-public_iface   = "ens3"
-public_ips     = ["203.0.113.20"]
-pubip_gateway  = "62.210.0.1"
+public_iface      = "ens3"
+public_host_cidr  = "203.0.113.2/28"
+pubip_gateway     = "62.210.0.1"
+[[nodes.public_ips]]
+address = "203.0.113.20"
+mac     = "de:ad:be:ef:00:10"

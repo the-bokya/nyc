@@ -112,33 +112,54 @@ def cluster_domain(node_folder: Path | None = None) -> str | None:
 
 
 @dataclass(frozen=True)
+class PubIpEntry:
+    address: str
+    mac: str
+    prefix: str = "32"
+
+
+@dataclass(frozen=True)
 class PubipConfig:
-    provider: str
-    iface: str
-    addresses: list[str]
+    iface: str          # physical public NIC (for provision/teardown)
+    ips: list           # list[PubIpEntry]
     gateway: str | None
-    scaleway_zone: str | None
-    scaleway_project_id: str | None
-    scaleway_server_id: str | None
-    secret_key: str | None  # SCW_SECRET_KEY env
+    bridge: str         # public bridge name (default pub0)
 
 
 def pubip(node_folder: Path | None = None) -> PubipConfig:
-    """Read public-IP config (NYC_PUBIP_* env wins over config.toml)."""
+    """Read public-IP config (NYC_PUBLIC_* env wins over config.toml).
+
+    NYC_PUBLIC_IPS accepts "addr|mac,addr|mac" CSV.
+    config.toml accepts public_ips as array of inline tables: [{address="...", mac="..."}].
+    """
     folder = (node_folder or Path.cwd()).resolve()
     data = _read_toml(folder)
     s = lambda env, key, default=None: (os.environ.get(env) or data.get(key) or default) or None
     ss = lambda env, key, default: str(os.environ.get(env) or data.get(key) or default)
+
     raw_ips = os.environ.get("NYC_PUBLIC_IPS") or data.get("public_ips") or []
     if isinstance(raw_ips, str):
-        raw_ips = [a.strip() for a in raw_ips.split(",") if a.strip()]
+        ips = []
+        for item in raw_ips.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            parts = item.split("|", 1)
+            ips.append(PubIpEntry(address=parts[0], mac=parts[1] if len(parts) > 1 else ""))
+    elif isinstance(raw_ips, list):
+        ips = []
+        for e in raw_ips:
+            if isinstance(e, dict):
+                ips.append(PubIpEntry(address=e["address"], mac=e["mac"],
+                                      prefix=e.get("prefix", "32")))
+            else:
+                ips.append(PubIpEntry(address=str(e), mac=""))
+    else:
+        ips = []
+
     return PubipConfig(
-        provider=ss("NYC_PUBIP_PROVIDER", "pubip_provider", "scaleway"),
         iface=ss("NYC_PUBLIC_IFACE", "public_iface", "eth0"),
-        addresses=list(raw_ips),
+        ips=ips,
         gateway=s("NYC_PUBIP_GATEWAY", "pubip_gateway"),
-        scaleway_zone=s("NYC_SCW_ZONE", "scaleway_zone"),
-        scaleway_project_id=s("NYC_SCW_PROJECT_ID", "scaleway_project_id"),
-        scaleway_server_id=s("NYC_SCW_SERVER_ID", "scaleway_server_id"),
-        secret_key=os.environ.get("SCW_SECRET_KEY"),
+        bridge=ss("NYC_PUBLIC_BRIDGE", "public_bridge", "pub0"),
     )

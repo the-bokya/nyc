@@ -48,10 +48,14 @@ def _host(node: dict) -> tuple[str, dict]:
         "vm_pub": str(_keydir / "id_ed25519.pub"),
         # public IP / domain config (written into each node's config.toml by provision.py)
         "cluster_domain": _cluster.get("vm_domain", ""),
-        "pubip_provider": _cluster.get("pubip_provider", "scaleway"),
         "public_iface": node.get("public_iface", ""),
+        # public_ips: list[{address, mac}] — provider-registered MAC required per IP
         "public_ips": node.get("public_ips", []),
         "pubip_gateway": node.get("pubip_gateway", ""),
+        "public_bridge": node.get("public_bridge", _cluster.get("public_bridge", "pub0")),
+        # public_host_cidr: host's own IP/prefix on public_iface (e.g. "203.0.113.1/28")
+        # required for the pub0 bridge provisioning step
+        "public_host_cidr": node.get("public_host_cidr", ""),
     }
 
 

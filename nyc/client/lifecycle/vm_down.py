@@ -18,10 +18,11 @@ def run(vms_dir: Path, vm_id: str, vg: str) -> None:
 def _network_down(vm_id: str) -> None:
     ns = f"vm-{vm_id[:8]}"
     host_veth = f"vmh-{vm_id[:8]}"
-    # Order matters: delete the netns first (kernel auto-removes the ns-side
-    # veth peer and the internal nbr0+tap0), then drop the host-side veth.
+    pub_veth = f"pvh-{vm_id[:8]}"
+    # Delete netns first: kernel reaps all ns-side peers (vmn-*, pvn-*, nbr0, pbr1, tap0, tap1).
     _safe(lambda: namespace.delete(ns))
     _safe(lambda: veth.delete(host_veth))
+    _safe(lambda: veth.delete(pub_veth))
 
 
 def _safe(fn) -> None:

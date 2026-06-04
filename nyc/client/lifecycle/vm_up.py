@@ -1,12 +1,20 @@
-"""Compose: env + host bridge + per-VM netns wired through veth + nbr0 + tap0.
+"""Compose: env + host bridges + per-VM netns wired through veth + nbr0/pbr1 + tap0/tap1.
 
-Layout:
-  host:           br-<node>-<vpc>  with gateway IP on the VPC's CIDR
-  host:           vmh-<vm>         (veth host side, joined to host bridge)
+VPC stack (always):
+  host:           br-<node>-<vpc>  gateway IP on the VPC CIDR
+  host:           vmh-<vm>         (veth host side, joined to VPC bridge)
   netns vm-<vm>:  vmn-<vm>         (veth ns side, bridged in nbr0)
   netns vm-<vm>:  nbr0             (bridge joining vmn and tap0)
-  netns vm-<vm>:  tap0             (firecracker NIC, no IP)
+  netns vm-<vm>:  tap0             (firecracker eth0, no IP)
   guest:          eth0 ← kernel boot arg `ip=10.x.x.y::10.x.x.1:...`
+
+Public stack (when public_ip is set):
+  host:           pub0             (persistent bridge over public NIC, created at provision)
+  host:           pvh-<vm>         (veth host side, enslaved to pub0)
+  netns vm-<vm>:  pvn-<vm>         (veth ns side, bridged in pbr1)
+  netns vm-<vm>:  pbr1             (bridge joining pvn and tap1)
+  netns vm-<vm>:  tap1             (firecracker eth1, registered MAC)
+  guest:          eth1 ← injected nyc-pubip.service (public IP, policy routing)
 """
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +26,14 @@ from nyc.client.network.overlay import anycast_mac, vni_for
 from nyc.client.vm import boot, config, create, inject
 from nyc.client.volume import attach
 from nyc.client.volume.pool import GOLD_DEFAULT
+
+
+@dataclass(frozen=True)
+class PublicIpSpec:
+    address: str
+    prefix: str
+    gateway: str
+    mac: str
 
 
 @dataclass(frozen=True)
@@ -39,13 +55,15 @@ class VmSpec:
     ssh_pubkey: str | None = None
     vcpu_count: int = 1
     mem_mib: int = 512
-    rootfs_origin: str = GOLD_DEFAULT  # golden LV the rootfs is thin-cloned from
+    rootfs_origin: str = GOLD_DEFAULT
+    public_ip: PublicIpSpec | None = None
 
 
 def run(spec: VmSpec) -> Path:
     paths = env_setup.run(spec.vms_dir, spec.vm_id, spec.assets, spec.vg, spec.rootfs_origin)
     inject.run(paths, spec.ssh_pubkey, spec.dns,
-               has_data_volume=spec.data_volume_path is not None)
+               has_data_volume=spec.data_volume_path is not None,
+               public_ip=spec.public_ip)
     if spec.data_volume_path is not None:
         attach.run(paths.root, spec.data_volume_path)
     _network(spec)
@@ -63,6 +81,8 @@ def _network(spec: VmSpec) -> None:
     namespace.create(ns)
     _wire_veth(spec, ns, host_veth, ns_veth)
     _wire_tap(ns, ns_veth)
+    if spec.public_ip:
+        _wire_public(spec, ns)
 
 
 def _overlay(spec: VmSpec, br: str) -> None:
@@ -87,12 +107,31 @@ def _wire_tap(ns: str, ns_veth: str) -> None:
     ns_bridge.attach(ns, "tap0")
 
 
+def _wire_public(spec: VmSpec, ns: str) -> None:
+    from nyc.config import pubip as pubip_cfg
+    cfg = pubip_cfg()
+    host_veth, ns_veth = _pub_veth_names(spec.vm_id)
+    veth.create_pair(host_veth, ns_veth)
+    veth.place_in_ns(ns_veth, ns)
+    bridge.attach(cfg.bridge, host_veth)
+    veth.up(host_veth)
+    ns_bridge.create(ns, "pbr1")
+    ns_bridge.attach(ns, ns_veth, "pbr1")
+    tap.create(ns, "tap1")
+    ns_bridge.attach(ns, "tap1", "pbr1")
+
+
 def _spawn(paths, spec: VmSpec) -> None:
-    cfg = config.VmConfig(vm_id=spec.vm_id, tap_name="tap0", mac=_mac(spec.vm_id),
-                          guest_ip=spec.ip, cidr=spec.cidr,
-                          has_data_volume=spec.data_volume_path is not None,
-                          vcpu_count=spec.vcpu_count, mem_mib=spec.mem_mib,
-                          dns=spec.dns)
+    public_tap = "tap1" if spec.public_ip else None
+    public_mac = spec.public_ip.mac if spec.public_ip else None
+    cfg = config.VmConfig(
+        vm_id=spec.vm_id, tap_name="tap0", mac=_mac(spec.vm_id),
+        guest_ip=spec.ip, cidr=spec.cidr,
+        has_data_volume=spec.data_volume_path is not None,
+        vcpu_count=spec.vcpu_count, mem_mib=spec.mem_mib,
+        dns=spec.dns,
+        public_tap=public_tap, public_mac=public_mac,
+    )
     config.build(paths, cfg)
     create.run(paths, spec.vm_id, _ns_name(spec.vm_id), spec.firecracker_bin)
     boot.run(paths)
@@ -104,6 +143,10 @@ def _ns_name(vm_id: str) -> str:
 
 def _veth_names(vm_id: str) -> tuple[str, str]:
     return f"vmh-{vm_id[:8]}", f"vmn-{vm_id[:8]}"
+
+
+def _pub_veth_names(vm_id: str) -> tuple[str, str]:
+    return f"pvh-{vm_id[:8]}", f"pvn-{vm_id[:8]}"
 
 
 def _mac(vm_id: str) -> str:

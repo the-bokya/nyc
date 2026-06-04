@@ -68,23 +68,25 @@ def _lvm_config_cmds() -> list[str]:
 
 def _nyc_config_cmds() -> list[str]:
     # Write domain / public-IP keys to config.toml. Strip prior lines first so
-    # re-provision never duplicates. public_ips is written as a TOML array.
-    ips = d.public_ips  # list[str] from inventory.py
-    ips_toml = "[" + ", ".join(f'"{a}"' for a in ips) + "]"
+    # re-provision never duplicates. public_ips written as inline array of tables.
+    ips = d.public_ips  # list[{address, mac}] from inventory.py
+    ips_toml = "[" + ", ".join(
+        f'{{address = "{e["address"]}", mac = "{e["mac"]}"}}'
+        for e in ips
+    ) + "]"
     cmds = [
-        f'sed -i "/^domain\\b/d;/^pubip_provider/d;/^public_iface/d;/^public_ips/d;/^pubip_gateway/d" {config}',
+        f'sed -i "/^domain\\b/d;/^public_iface/d;/^public_ips/d;/^pubip_gateway/d;/^public_bridge/d" {config}',
     ]
     if d.cluster_domain:
         cmds.append(f'echo "domain = \\"{d.cluster_domain}\\"" >> {config}')
-    if d.pubip_provider:
-        cmds.append(f'echo "pubip_provider = \\"{d.pubip_provider}\\"" >> {config}')
     if d.public_iface:
         cmds.append(f'echo "public_iface = \\"{d.public_iface}\\"" >> {config}')
     if ips:
-        # Single quotes so bash doesn't consume the double-quotes inside the array.
         cmds.append(f"echo 'public_ips = {ips_toml}' >> {config}")
     if d.pubip_gateway:
         cmds.append(f'echo "pubip_gateway = \\"{d.pubip_gateway}\\"" >> {config}')
+    if d.public_bridge:
+        cmds.append(f'echo "public_bridge = \\"{d.public_bridge}\\"" >> {config}')
     return cmds
 
 
@@ -195,6 +197,31 @@ server.shell(
 )
 server.shell(name="write lvm config", commands=_lvm_config_cmds())
 server.shell(name="write nyc config", commands=_nyc_config_cmds())
+
+# Bridge the public NIC once at provision time.
+# RISKIEST STEP: moving the host public IP onto pub0 changes L2 topology.
+# Test on one node before rolling to others. Re-provision is safe: guarded by
+# ip-link-show check so already-bridged nodes are a no-op.
+if getattr(d, "public_iface", None) and getattr(d, "public_host_cidr", None):
+    files.template(
+        name="pub0 bridge netplan config",
+        src=str(TEMPLATES / "pub-bridge.yaml.j2"),
+        dest="/etc/netplan/99-nyc-pub-bridge.yaml",
+        mode="600",
+        public_iface=d.public_iface,
+        public_host_cidr=d.public_host_cidr,
+        pubip_gateway=d.pubip_gateway or "",
+        _sudo=True,
+    )
+    server.shell(
+        name="apply pub0 bridge (guarded: skip if already up)",
+        commands=[
+            "ip link show pub0 >/dev/null 2>&1 && exit 0",
+            "sudo netplan apply",
+            "sleep 3",
+            "ip link show pub0 >/dev/null 2>&1 || { echo 'pub0 not up after netplan apply'; exit 1; }",
+        ],
+    )
 
 node_unit = files.template(
     name="nyc-node.service",

@@ -30,7 +30,7 @@ from nyc.client.volume.pool import GOLD_DEFAULT
 from nyc.config import lvm, resolve, volume_vg
 from nyc.defaults import ensure_default_vpc
 from nyc.routers._proxy import forward
-from nyc.tables import Vms, Vpcs, Volumes, Snapshots
+from nyc.tables import Vms, Vpcs, Volumes, Snapshots, PublicIps
 
 router = APIRouter(prefix="/vms")
 
@@ -175,10 +175,39 @@ def _bring_up(row: dict, cidr: str, vol_path: Path | None, client: Client,
     row["status"] = "running"
 
 
+def recreate_vm(vm_id: str, client: Client) -> None:
+    """Tear down the VM and respawn from current DB state (picks up PublicIps row)."""
+    row = Vms(client).docs.get(where={"id": vm_id})
+    if row is None:
+        return
+    d = row.__dict__
+    paths = resolve()
+    vm_down.run(paths.vms_dir, vm_id, volume_vg(d["node_id"]))
+    vpc = Vpcs(client).docs.get(where={"id": d["vpc_id"]})
+    if vpc is None:
+        return
+    vol_path = None
+    if d.get("data_volume_id"):
+        vol_row = Volumes(client).docs.get(where={"id": d["data_volume_id"]})
+        if vol_row:
+            vol_path = Path(vol_row.__dict__["path"])
+    _bring_up(d, vpc.__dict__["cidr"], vol_path, client)
+
+
 def _spec(row: dict, cidr: str, vol_path: Path | None, client: Client,
           ssh_pubkey: str | None = None, rootfs_origin: str = GOLD_DEFAULT) -> "vm_up.VmSpec":
     paths = resolve()
     node_id = row["node_id"]
+    pip = PublicIps(client).docs.get(where={"vm_id": row["id"], "status": "attached"})
+    public_ip = None
+    if pip:
+        pd = pip.__dict__
+        public_ip = vm_up.PublicIpSpec(
+            address=pd["address"],
+            prefix=pd.get("prefix") or "32",
+            gateway=pd.get("gateway") or "",
+            mac=pd["mac"],
+        )
     return vm_up.VmSpec(
         vm_id=row["id"], vm_name=row["name"], node_id=node_id, vpc_id=row["vpc_id"],
         ip=row["ip"], cidr=cidr, data_volume_path=vol_path,
@@ -190,16 +219,19 @@ def _spec(row: dict, cidr: str, vol_path: Path | None, client: Client,
         dns=os.environ.get("NYC_VM_DNS", "1.1.1.1"),
         ssh_pubkey=ssh_pubkey,
         vcpu_count=int(row.get("vcpu_count", 1)), mem_mib=int(row.get("mem_mib", 512)),
+        public_ip=public_ip,
     )
 
 
-def _spawn_local(body: SpawnIn, node_id: str, client: Client) -> dict:
+def _spawn_local(body: SpawnIn, node_id: str, client: Client, pre_bring_up=None) -> dict:
     vpc = ensure_default_vpc(client)
     rootfs_origin = _resolve_root_image(body, node_id, client)
     vol = _auto_volume(body, node_id, client)
     ip = pick_ip(vpc["cidr"], _used_ips(vpc["id"], client))
     row = _spawn_row(body, node_id, vpc["id"], ip, vol["id"])
     Vms(client).docs.insert(row)
+    if pre_bring_up is not None:
+        pre_bring_up(row["id"])
     _bring_up(row, vpc["cidr"], Path(vol["path"]), client,
               ssh_pubkey=body.ssh_key, rootfs_origin=rootfs_origin)
     return row

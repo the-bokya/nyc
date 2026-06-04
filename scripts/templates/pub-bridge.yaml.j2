@@ -1,0 +1,22 @@
+# Persistent public bridge — written by provision.py, applied once.
+# Enslaves {{ public_iface }} into pub0 and moves the host's public IP onto the bridge.
+# CAUTION: applying this changes which interface holds the public IP.
+# Test on one node before rolling to the rest.
+network:
+  version: 2
+  ethernets:
+    {{ public_iface }}:
+      dhcp4: false
+      dhcp6: false
+  bridges:
+    pub0:
+      interfaces: [{{ public_iface }}]
+      addresses: [{{ public_host_cidr }}]
+{% if pubip_gateway %}
+      routes:
+        - to: default
+          via: {{ pubip_gateway }}
+{% endif %}
+      parameters:
+        stp: false
+        forward-delay: 0

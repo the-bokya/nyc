@@ -9,8 +9,8 @@ class PublicIps(ORM):
         "vm_id":      "TEXT",
         "address":    "TEXT NOT NULL",
         "gateway":    "TEXT",
-        "iface":      "TEXT NOT NULL",
-        "provider":   "TEXT NOT NULL DEFAULT 'scaleway'",
+        "mac":        "TEXT NOT NULL",
+        "prefix":     "TEXT NOT NULL DEFAULT '32'",
         "status":     "TEXT NOT NULL DEFAULT 'attached'",
         "created_at": "TEXT NOT NULL",
     }

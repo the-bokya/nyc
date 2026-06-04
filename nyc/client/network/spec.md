@@ -39,7 +39,7 @@ host (per VPC): iptables NYC-* + net.ipv4.ip_forward=1  → NAT to the internet
 | `bridge.py` | `name_for(node,vpc)`, `ensure(br, ip_cidr, mac=None)`, `delete`, `attach(br, veth)`, `exists` | Per-VPC host bridge. `mac=` pins the anycast gateway MAC. |
 | `vxlan.py` | `name_for(node,vpc)`, `ensure(name, vni, local_ip, bridge)`, `set_fdb(name, peers)`, `delete`, `exists` | Per-VPC VXLAN VTEP + head-end FDB (unicast replication to each peer, no multicast). `set_fdb` reconciles the flood list to exactly `peers`. |
 | `nat.py` | `ensure(cidr)`, `delete(cidr)` | `ip_forward` + `NYC-POSTROUTING`/`NYC-FORWARD` masquerade & accept rules. Idempotent via `iptables -C`/`-nL`. Intra-VPC traffic (`! -d cidr`) is not NAT'd. |
-| `ns_bridge.py` | `create(ns)`, `attach(ns, link)` | `nbr0` bridge *inside* a netns, joining veth + tap0. |
+| `ns_bridge.py` | `create(ns, name="nbr0")`, `attach(ns, link, name="nbr0")` | Bridge *inside* a netns. VPC uses `nbr0`; public stack uses `pbr1` in the same netns. |
 | `tap.py` | `create(ns, name)`, `delete(ns, name)` | `tap0` inside a netns. No IP — passthrough for firecracker's vhost. |
 
 The peer list and the node's own underlay IP come from the dadar `nodes`
@@ -52,9 +52,10 @@ Interface names are kept ≤ 15 chars on purpose:
 
 - Bridge: `br-<node[:4]>-<vpc[:4]>` (12 chars); VXLAN: `vx-<node[:4]>-<vpc[:4]>` —
   two nodes on one host never collide on the same VPC.
-- veth: `vmh-<vm[:8]>` / `vmn-<vm[:8]>`.
-- In-netns bridge is always `nbr0`; the netns gives it its own namespace, so a
-  fixed name is safe.
+- VPC veth: `vmh-<vm[:8]>` / `vmn-<vm[:8]>`.
+- Public veth: `pvh-<vm[:8]>` / `pvn-<vm[:8]>`.
+- In-netns VPC bridge: `nbr0`; public bridge: `pbr1`. Two distinct names in the
+  same netns, so no collision.
 
 Caveat: bridge/VXLAN names use only the first 4 hex chars of each id (16 bits),
 so two VPCs sharing a node and a 4-hex prefix would collide onto one bridge
@@ -63,10 +64,10 @@ so two VPCs sharing a node and a 4-hex prefix would collide onto one bridge
 ## Teardown ordering
 
 `vm_down` deletes the **netns first**: the kernel then auto-removes the
-ns-side veth peer, `nbr0`, and `tap0`. Only the host-side veth needs an
-explicit `veth.delete`. Don't reorder this. Per-VPC infra (bridge, VXLAN, NAT
-rules) is shared and outlives individual VMs — it is removed at environment
-teardown, not per-VM.
+ns-side veth peers (`vmn-*`, `pvn-*`), `nbr0`, `pbr1`, `tap0`, and `tap1`.
+Both host-side veths (`vmh-*` and `pvh-*`) need explicit `veth.delete` after
+the netns is gone. Don't reorder. Per-VPC infra (bridge, VXLAN, NAT rules)
+and the host bridge `pub0` are shared and outlive individual VMs.
 
 ## Backend notes
 

@@ -61,7 +61,7 @@ server.shell(
         r"ip netns list 2>/dev/null | awk '{print $1}' | grep -E '^vm-[0-9a-f]{8}$' "
         r'| while read -r ns; do sudo -n ip netns del "$ns" 2>/dev/null || true; done',
         r"ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d'@' -f1 "
-        r"| grep -E '^(br-[0-9a-f]{4}-[0-9a-f]{4}|vx-[0-9a-f]{4}-[0-9a-f]{4}|vm[hn]-[0-9a-f]{8})$' "
+        r"| grep -E '^(br-[0-9a-f]{4}-[0-9a-f]{4}|vx-[0-9a-f]{4}-[0-9a-f]{4}|vm[hn]-[0-9a-f]{8}|pv[hn]-[0-9a-f]{8})$' "
         r'| while read -r dev; do sudo -n ip link del "$dev" 2>/dev/null || true; done',
     ],
 )
@@ -75,6 +75,15 @@ server.shell(
         "sudo -n iptables -t nat -X NYC-POSTROUTING 2>/dev/null || true",
         "sudo -n iptables -F NYC-FORWARD 2>/dev/null || true",
         "sudo -n iptables -X NYC-FORWARD 2>/dev/null || true",
+    ],
+)
+
+server.shell(
+    name="remove pub0 bridge netplan config + restore public NIC",
+    commands=[
+        "sudo -n rm -f /etc/netplan/99-nyc-pub-bridge.yaml",
+        # Re-applying netplan after removing the bridge config restores the original NIC setup.
+        "ip link show pub0 >/dev/null 2>&1 && sudo -n netplan apply 2>/dev/null || true",
     ],
 )
 
